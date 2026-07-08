@@ -57,12 +57,18 @@ def friendly_property_type(listing):
 
 
 def lot_size_display(listing):
-    """Format the MRED 'Dimensions' (lot size) field for buyer-facing display."""
+    """Format the MRED 'Dimensions' (lot size) field for buyer-facing display.
+
+    MRED often stores this as shouted all-caps free text ("COMMON",
+    "PER SURVEY") rather than a plain dimension string ("50 X 125"); those
+    read as SHOUTING next to normally-cased labels, so sentence-case any
+    value that's pure letters/spaces (leaving actual dimension strings,
+    which mix in digits, untouched)."""
     val = (listing.lot_size or "").strip()
     if not val:
         return "TBD"
-    if val.upper() == "COMMON":
-        return "Common"
+    if re.fullmatch(r"[A-Za-z ]+", val) and val.upper() == val:
+        return val.title()
     return val
 
 
@@ -78,18 +84,37 @@ def parking_note(listing):
     return ""
 
 
-def building_details_display(listing):
-    """Building-level facts (unit count, stories, which floor this unit is
-    on) matter most for condos/co-ops so buyers know the scale of the
-    building and where in it this particular unit sits."""
+def market_time_display(listing):
+    """Combine list date and days-on-market into one compact header line --
+    both signal how fresh a listing is, so they belong together rather than
+    as two separate stray facts."""
     parts = []
-    if listing.total_units:
-        parts.append(f"{listing.total_units} Units")
-    if listing.total_stories:
-        parts.append(f"{listing.total_stories} Stories")
-    if listing.unit_floor_level:
-        parts.append(f"Unit on Floor {listing.unit_floor_level}")
+    if listing.list_date:
+        try:
+            d = datetime.datetime.strptime(listing.list_date, "%m/%d/%Y")
+            parts.append(f"Listed {d.strftime('%b')} {d.day}, {d.year}")
+        except ValueError:
+            parts.append(f"Listed {listing.list_date}")
+    if listing.dom_total:
+        if listing.dom_list_side and listing.dom_list_side != listing.dom_total:
+            parts.append(f"{listing.dom_list_side} Days on Market ({listing.dom_total} Total)")
+        else:
+            unit = "Day" if listing.dom_total == "1" else "Days"
+            parts.append(f"{listing.dom_total} {unit} on Market")
     return " · ".join(parts)
+
+
+def mult_pins_display(listing):
+    """Whether this listing's tax bill spans multiple PINs/parcels. MRED
+    doesn't list the extra parcels here, just a pointer to the agent
+    remarks, so translate that into a plain yes/no + pointer instead of
+    showing the raw MLS phrasing verbatim."""
+    val = (listing.mult_pins or "").strip()
+    if not val:
+        return ""
+    if val.lower().startswith("no"):
+        return "No"
+    return "Yes (see agent remarks for parcel detail)"
 
 
 def pets_display(listing):
@@ -140,7 +165,8 @@ def render_flyer(
         sqft_display=listing.approx_sf or "TBD",
         lot_size_display=lot_size_display(listing),
         parking_note=parking_note(listing),
-        building_details=building_details_display(listing),
+        market_time_display=market_time_display(listing),
+        mult_pins_display=mult_pins_display(listing),
         pets_display=pets_display(listing),
         prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
     )

@@ -89,6 +89,8 @@ class Listing:
     property_type: str = ""
     status: str = ""
     list_date: str = ""
+    dom_list_side: str = ""
+    dom_total: str = ""
     list_price: str = ""
     address_line1: str = ""
     city: str = ""
@@ -122,6 +124,8 @@ class Listing:
 
     tax_amount: str = ""
     tax_year: str = ""
+    tax_exemptions: str = ""
+    mult_pins: str = ""
 
     elementary: str = ""
     junior_high: str = ""
@@ -200,7 +204,11 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     full_text = page1_text + "\n" + page2_text
 
     # --- Property type / MLS# / price -------------------------------------
-    m = re.match(r"([A-Za-z ]+?)\s*MLS #:\s*(\d+)", page1_text)
+    # Some exports (e.g. browser "Print to PDF") prepend a timestamp/site
+    # banner line before the real listing header, so this can't be anchored
+    # to the very start of the page text -- search for it instead of
+    # matching only at position 0.
+    m = re.search(r"([A-Za-z ]+?)\s*MLS #:\s*(\d+)", page1_text)
     if m:
         listing.property_type = m.group(1).strip()
         listing.mls_number = m.group(2).strip()
@@ -208,6 +216,14 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.list_price = money(_grab(page1_text, "List Price", ["Orig List Price", "\n"]))
     listing.status = _grab(page1_text, "Status", ["List Date"])
     listing.list_date = _grab(page1_text, "List Date", ["Orig List Price"])
+
+    # "Mkt. Time (Lst./Tot.)" is MRED's days-on-market field: the first
+    # number is time on the *current* listing period, the second is
+    # cumulative across any relists -- they differ only if this property
+    # has been relisted, so both are worth keeping.
+    m = re.search(r"Mkt\.?\s*Time\s*\(Lst\.?/Tot\.?\):(\d+)\s*/\s*(\d+)", page1_text)
+    if m:
+        listing.dom_list_side, listing.dom_total = m.group(1), m.group(2)
 
     # --- Address ------------------------------------------------------------
     m = re.search(r"Address:(.*?),\s*([A-Za-z .]+),\s*([A-Z]{2})\s*(\d{5})", full_text)
@@ -278,13 +294,24 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     school_col = assess_col = tax_col = pet_col = ""
     all_words = []
     page_width = 612
+    left_margin = 14
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             p1 = pdf.pages[0]
             all_words = p1.extract_words()
             page_width = p1.width
-            header_top = next((w["top"] for w in all_words if w["text"] == "School" and w["x0"] < 20), None)
-            footer_top = next((w["top"] for w in all_words if w["text"] == "Square" and w["x0"] < 20), None)
+            # The page's actual left margin varies by export source (native
+            # MRED PDF vs. a browser "Print to PDF", different browsers, etc),
+            # so anchor words are matched relative to the page's own margin
+            # rather than an absolute pixel value -- a hardcoded cutoff like
+            # "x0 < 20" is brittle and silently drops whole sections (school
+            # district, assessments, tax, pets) when a differently-exported
+            # sheet's margin is a few points wider.
+            if all_words:
+                left_margin = min(w["x0"] for w in all_words)
+            margin_cutoff = left_margin + 30
+            header_top = next((w["top"] for w in all_words if w["text"] == "School" and w["x0"] < margin_cutoff), None)
+            footer_top = next((w["top"] for w in all_words if w["text"] == "Square" and w["x0"] < margin_cutoff), None)
             if header_top is not None and footer_top is not None:
                 top, bottom = header_top - 2, footer_top - 2
                 school_col = _column_text(all_words, 0, 165, top, bottom)
@@ -301,14 +328,34 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.tax_amount = money("$" + _first_num(_grab(tax_col, "Amount", ["\n"])))
     listing.tax_year = _grab(tax_col, "Tax Year", ["\n"])
 
+    # "Mult PINs" and "Tax Exmps" values can wrap onto a second line within
+    # this column (e.g. "Mult PINs: (See Agent\nRemarks)"), so flatten
+    # newlines to spaces first rather than grabbing from the raw column
+    # text, which would truncate at the wrap.
+    tax_col_flat = re.sub(r"\s*\n\s*", " ", tax_col)
+    listing.mult_pins = _grab(tax_col_flat, "Mult PINs", ["Tax Year", "$"])
+    listing.tax_exemptions = _grab(tax_col_flat, "Tax Exmps", ["Coop Tax Deduction", "$"])
+
     listing.elementary = _grab(school_col, "Elementary", ["\n"])
     listing.junior_high = _grab(school_col, "Junior High", ["\n"])
     listing.high_school = _grab(school_col, "High School", ["\n"])
 
-    listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "$"])
+    # Stop at "Pet Weight:" (the field label, with its colon) as well as
+    # "Max Pet Weight" -- on some sheets the word "Max" lands a hair's-width
+    # inside the neighboring tax column (its x-position is right at the
+    # column boundary), leaving an orphaned "Pet Weight:000" fragment in
+    # this column that "Max Pet Weight" alone wouldn't catch as a stop
+    # point. The colon is required so this doesn't also match the legit
+    # pet-policy phrase "Pet Weight Limitation" (no colon) that can appear
+    # earlier in this same value.
+    listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "Pet Weight:", "$"])
     m = re.search(r"Max Pet Weight:(\d+)", page1_text)
     if m:
-        listing.max_pet_weight = m.group(1)
+        # MRED zero-fills this field ("000") when no specific limit was
+        # entered -- that's a null placeholder, not an actual 0 lb limit.
+        weight = int(m.group(1))
+        if weight > 0:
+            listing.max_pet_weight = str(weight)
 
     listing.assessment_includes = _grab(full_text, "Asmt Incl", ["HERS Index Score", "\n"])
 
@@ -331,7 +378,8 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             return w["top"] if w else None
 
         grid_top = word_top("Age:")
-        brm_top = next((w["top"] for w in words if w["text"] == "Broker" and w["x0"] < 30), None)
+        margin_cutoff = left_margin + 30
+        brm_top = next((w["top"] for w in words if w["text"] == "Broker" and w["x0"] < margin_cutoff), None)
         if grid_top is not None and brm_top is not None:
             top, bottom = grid_top - 2, brm_top - 2
             # Flatten to single-line-per-column text: every field we pull out of
@@ -343,7 +391,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             feat_col2 = re.sub(r"\s*\n\s*", " ", _column_text(words, 195, 395, top, bottom))
             feat_col3 = re.sub(r"\s*\n\s*", " ", _column_text(words, 395, page_width, top, bottom))
 
-        room_hdr_top = next((w["top"] for w in words if w["text"] == "Room" and w["x0"] < 60), None)
+        room_hdr_top = next((w["top"] for w in words if w["text"] == "Room" and w["x0"] < margin_cutoff), None)
         interior_top = word_top("Interior")
         if room_hdr_top is not None and interior_top is not None:
             top, bottom = room_hdr_top - 2, interior_top - 2
@@ -387,7 +435,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.rooms = parse_room_column(rooms_left) + parse_room_column(rooms_right)
 
     # --- Listing broker (MLS compliance credit) -----------------------------------
-    m = re.search(r"List Broker:\s*(.*?)\s*\(\d+\)\s*(?:on behalf of\s*(.*?)\s*\(T?\d+\))?\s*/\s*\(([\d\-\s]+)\)", full_text)
+    m = re.search(r"List Broker:\s*(.*?)\s*\(\d+\)\s*(?:on behalf of\s*(.*?)\s*\(T?\d+\))?\s*/\s*(.*?)\s*/", full_text)
     if m:
         listing.list_broker_name = m.group(1).strip()
         listing.list_brokerage = (m.group(2) or "").strip()

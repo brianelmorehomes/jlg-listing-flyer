@@ -124,6 +124,11 @@ h1, h2, h3 { margin: 0; padding: 0; }
   color: var(--granite);
   margin-top: 4px;
 }
+.hero-info .market-line {
+  font-size: 8pt;
+  color: #6b6b6d;
+  margin-top: 3px;
+}
 .hero-info .price-row {
   display: flex;
   align-items: baseline;
@@ -174,6 +179,10 @@ h1, h2, h3 { margin: 0; padding: 0; }
   display: block;
 }
 .facts-strip-secondary .fact .num { font-size: 12pt; }
+.fact .num.text {
+  font-size: 11pt;
+  letter-spacing: -0.01em;
+}
 .fact .lbl {
   font-size: 6.8pt;
   text-transform: uppercase;
@@ -347,6 +356,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   <div class="hero-info">
     <h1 class="serif">{{ l.street_address }}</h1>
     <div class="city">{{ l.city_state_zip }}{% if l.ownership %} &nbsp;&middot;&nbsp; {{ l.ownership }}{% endif %}</div>
+    {% if market_time_display %}<div class="market-line">{{ market_time_display }}</div>{% endif %}
     <div class="price-row">
       <div class="amt">{{ l.list_price }}</div>
       <div class="type">{{ friendly_type }}</div>
@@ -358,7 +368,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   <div class="fact"><span class="num">{{ l.bedrooms or '—' }}</span><span class="lbl">Beds</span></div>
   <div class="fact"><span class="num">{{ l.bathrooms_display or '—' }}</span><span class="lbl">Baths</span></div>
   <div class="fact"><span class="num">{{ sqft_display }}</span><span class="lbl">Sq Ft</span></div>
-  <div class="fact"><span class="num">{{ lot_size_display }}</span><span class="lbl">Lot Size</span></div>
+  <div class="fact"><span class="num text">{{ lot_size_display }}</span><span class="lbl">Lot Size</span></div>
   <div class="fact"><span class="num">{{ l.year_built or '—' }}</span><span class="lbl">Year Built</span></div>
 </div>
 <div class="facts-strip-secondary">
@@ -368,6 +378,9 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     {% if parking_note %}<span class="note">{{ parking_note }}</span>{% endif %}
   </div>
   <div class="fact"><span class="num">{{ l.rooms_total or '—' }}</span><span class="lbl">Total Rooms</span></div>
+  <div class="fact"><span class="num">{{ l.total_units or '—' }}</span><span class="lbl">Total Units</span></div>
+  <div class="fact"><span class="num">{{ l.total_stories or '—' }}</span><span class="lbl">Stories</span></div>
+  <div class="fact"><span class="num">{{ l.unit_floor_level or '—' }}</span><span class="lbl">Unit Floor</span></div>
 </div>
 
 <div class="section-title">About This Home</div>
@@ -406,16 +419,15 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   <div class="two-col">
     <div class="col">
       {% if l.interior_features %}<div class="feature-group"><div class="g-title">Interior</div><div class="g-body">{{ l.interior_features }}</div></div>{% endif %}
-      {% if l.kitchen_features or l.appliances %}<div class="feature-group"><div class="g-title">Kitchen</div><div class="g-body">{% if l.kitchen_features %}{{ l.kitchen_features }}{% endif %}{% if l.appliances %}. Appliances: {{ l.appliances }}{% endif %}</div></div>{% endif %}
+      {% if l.kitchen_features or l.appliances %}<div class="feature-group"><div class="g-title">Kitchen</div><div class="g-body">{% if l.kitchen_features %}{{ l.kitchen_features }}{% if l.appliances %}. {% endif %}{% endif %}{% if l.appliances %}Appliances: {{ l.appliances }}{% endif %}</div></div>{% endif %}
       {% if l.bath_amenities %}<div class="feature-group"><div class="g-title">Bath Amenities</div><div class="g-body">{{ l.bath_amenities }}</div></div>{% endif %}
       {% if l.exterior_features %}<div class="feature-group"><div class="g-title">Exterior</div><div class="g-body">{{ l.exterior_features }}</div></div>{% endif %}
     </div>
     <div class="col">
-      {% if l.heating or l.cooling %}<div class="feature-group"><div class="g-title">Heating &amp; Cooling</div><div class="g-body">{% if l.heating %}Heat: {{ l.heating }}{% endif %}{% if l.cooling %}. AC: {{ l.cooling }}{% endif %}</div></div>{% endif %}
+      {% if l.heating or l.cooling %}<div class="feature-group"><div class="g-title">Heating &amp; Cooling</div><div class="g-body">{% if l.heating %}Heat: {{ l.heating }}{% if l.cooling %}. {% endif %}{% endif %}{% if l.cooling %}AC: {{ l.cooling }}{% endif %}</div></div>{% endif %}
       {% if l.laundry %}<div class="feature-group"><div class="g-title">Laundry</div><div class="g-body">{{ l.laundry }}</div></div>{% endif %}
       {% if l.parking_type %}<div class="feature-group"><div class="g-title">Parking &amp; Garage</div><div class="g-body">{{ l.parking_type }}{% if l.parking_spaces %} &middot; {{ l.parking_spaces }} space(s){% endif %}{% if l.garage_details %} &middot; {{ l.garage_details }}{% endif %}</div></div>{% endif %}
       {% if l.amenities %}<div class="feature-group"><div class="g-title">Building Amenities</div><div class="g-body">{{ l.amenities }}</div></div>{% endif %}
-      {% if building_details %}<div class="feature-group"><div class="g-title">Building Details</div><div class="g-body">{{ building_details }}</div></div>{% endif %}
     </div>
   </div>
 
@@ -430,6 +442,8 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     <div class="card">
       <div class="c-title">Property Tax</div>
       {% if l.tax_amount %}<div class="c-line"><b>{{ l.tax_amount }}</b>{% if l.tax_year %} &nbsp;({{ l.tax_year }}){% endif %}</div>{% endif %}
+      {% if mult_pins_display %}<div class="c-line">Multiple PINs: {{ mult_pins_display }}</div>{% endif %}
+      {% if l.tax_exemptions %}<div class="c-line">Exemptions: {{ l.tax_exemptions }}</div>{% endif %}
     </div>
     <div class="card">
       <div class="c-title">Schools</div>

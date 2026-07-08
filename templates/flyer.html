@@ -227,11 +227,22 @@ h1, h2, h3 { margin: 0; padding: 0; }
   text-align: justify;
 }
 
+/* Long-remarks listings (typically detached single-family homes with
+   extensive agent copy) need a tighter type scale to still fit the
+   fixed 2-page layout -- these tiers trade a little size for keeping
+   everything on page 1 rather than spilling an extra page. */
+.remarks-body.condensed { font-size: 8.6pt; line-height: 1.38; }
+.remarks-body.tight { font-size: 8pt; line-height: 1.28; }
+.remarks-body.very-tight { font-size: 7.5pt; line-height: 1.2; }
+.remarks-lead.condensed { font-size: 10.2pt; margin-bottom: 5px; }
+.remarks-lead.tight { font-size: 9.6pt; margin-bottom: 4px; }
+
 .directions {
   margin-top: 10px;
   font-size: 8.2pt;
   color: #6b6b6d;
 }
+.directions.condensed, .directions.tight, .directions.very-tight { margin-top: 6px; font-size: 7.6pt; }
 .directions b { color: var(--granite); }
 
 /* ---------- Page footer ---------- */
@@ -256,6 +267,7 @@ table.rooms {
   font-size: 8.6pt;
   margin-bottom: 4px;
 }
+table.rooms.dense { font-size: 8pt; }
 table.rooms th {
   text-align: left;
   font-size: 6.8pt;
@@ -269,12 +281,14 @@ table.rooms td {
   padding: 4px 6px;
   border-bottom: 0.6pt solid var(--hairline);
 }
+table.rooms.dense td { padding: 2.6px 6px; }
 table.rooms tr:nth-child(even) td { background: #fafafa; }
 
 .two-col { display: flex; gap: 22px; }
 .two-col .col { flex: 1; }
 
 .feature-group { margin-bottom: 11px; }
+.feature-group.dense { margin-bottom: 7px; }
 .feature-group .g-title {
   font-size: 7.6pt;
   font-weight: 700;
@@ -288,6 +302,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   color: var(--granite);
   line-height: 1.45;
 }
+.feature-group.dense .g-body { font-size: 8.2pt; line-height: 1.32; }
 
 .card-row { display: flex; gap: 14px; margin-top: 4px; }
 .card {
@@ -306,6 +321,17 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
 }
 .card .c-line { font-size: 8.4pt; margin-bottom: 2px; }
 .card .c-line b { color: var(--broker-blue); }
+
+/* Denser page-2 spacing for content-heavy listings (long room lists /
+   feature sets) -- shaves margins throughout page 2 so everything still
+   lands on 2 pages instead of spilling the compliance footer alone onto
+   its own 3rd page. */
+.page2.dense .section-title { margin-top: 11px; margin-bottom: 6px; padding-bottom: 3px; }
+.page2.dense .running-head { margin-bottom: 9px; }
+.page2.dense .card { padding: 7px 10px; }
+.page2.dense .compliance { margin-top: 10px; padding-top: 7px; }
+.page2.dense .compliance .legal { line-height: 1.35; }
+.page2.dense .compliance .top-row { margin-bottom: 5px; }
 
 /* ---------- Compliance footer (page 2 only) ---------- */
 .compliance {
@@ -378,22 +404,28 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     {% if parking_note %}<span class="note">{{ parking_note }}</span>{% endif %}
   </div>
   <div class="fact"><span class="num">{{ l.rooms_total or '—' }}</span><span class="lbl">Total Rooms</span></div>
+  {% if l.total_units or l.total_stories or l.unit_floor_level %}
   <div class="fact"><span class="num">{{ l.total_units or '—' }}</span><span class="lbl">Total Units</span></div>
   <div class="fact"><span class="num">{{ l.total_stories or '—' }}</span><span class="lbl">Stories</span></div>
   <div class="fact"><span class="num">{{ l.unit_floor_level or '—' }}</span><span class="lbl">Unit Floor</span></div>
+  {% else %}
+  <div class="fact"><span class="num text">{{ basement_display or '—' }}</span><span class="lbl">Basement</span></div>
+  <div class="fact"><span class="num">{{ l.fireplaces or '—' }}</span><span class="lbl">Fireplaces</span></div>
+  <div class="fact"><span class="num">{{ l.stories or '—' }}</span><span class="lbl">Stories</span></div>
+  {% endif %}
 </div>
 
 <div class="section-title">About This Home</div>
-{% if remarks_lead %}<div class="remarks-lead">&ldquo;{{ remarks_lead }}&rdquo;</div>{% endif %}
-<div class="remarks-body">{{ remarks_rest }}</div>
+{% if remarks_lead %}<div class="remarks-lead {{ remarks_size_class }}">&ldquo;{{ remarks_lead }}&rdquo;</div>{% endif %}
+<div class="remarks-body {{ remarks_size_class }}">{{ remarks_rest }}</div>
 
 {% if l.directions %}
-<div class="directions"><b>Directions:</b> {{ l.directions }}</div>
+<div class="directions {{ remarks_size_class }}"><b>Directions:</b> {{ l.directions }}</div>
 {% endif %}
 
 
 <!-- ============ PAGE 2 ============ -->
-<div class="page2">
+<div class="page2 {{ 'dense' if page2_dense else '' }}">
 
   <div class="running-head">
     <span><b>{{ l.street_address }}</b> &nbsp;{{ l.city_state_zip }}</span>
@@ -402,7 +434,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
 
   {% if l.rooms %}
   <div class="section-title">Room Dimensions</div>
-  <table class="rooms">
+  <table class="rooms {{ 'dense' if page2_dense else '' }}">
     <tr><th>Room</th><th>Size</th><th>Level</th><th>Flooring</th></tr>
     {% for r in l.rooms %}
     <tr>
@@ -418,25 +450,25 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   <div class="section-title">Property Features</div>
   <div class="two-col">
     <div class="col">
-      {% if l.interior_features %}<div class="feature-group"><div class="g-title">Interior</div><div class="g-body">{{ l.interior_features }}</div></div>{% endif %}
-      {% if l.kitchen_features or l.appliances %}<div class="feature-group"><div class="g-title">Kitchen</div><div class="g-body">{% if l.kitchen_features %}{{ l.kitchen_features }}{% if l.appliances %}. {% endif %}{% endif %}{% if l.appliances %}Appliances: {{ l.appliances }}{% endif %}</div></div>{% endif %}
-      {% if l.bath_amenities %}<div class="feature-group"><div class="g-title">Bath Amenities</div><div class="g-body">{{ l.bath_amenities }}</div></div>{% endif %}
-      {% if l.exterior_features %}<div class="feature-group"><div class="g-title">Exterior</div><div class="g-body">{{ l.exterior_features }}</div></div>{% endif %}
+      {% if l.interior_features %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Interior</div><div class="g-body">{{ l.interior_features }}</div></div>{% endif %}
+      {% if l.kitchen_features or l.appliances %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Kitchen</div><div class="g-body">{% if l.kitchen_features %}{{ l.kitchen_features }}{% if l.appliances %}. {% endif %}{% endif %}{% if l.appliances %}Appliances: {{ l.appliances }}{% endif %}</div></div>{% endif %}
+      {% if l.bath_amenities %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Bath Amenities</div><div class="g-body">{{ l.bath_amenities }}</div></div>{% endif %}
+      {% if l.exterior_features %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Exterior</div><div class="g-body">{{ l.exterior_features }}</div></div>{% endif %}
     </div>
     <div class="col">
-      {% if l.heating or l.cooling %}<div class="feature-group"><div class="g-title">Heating &amp; Cooling</div><div class="g-body">{% if l.heating %}Heat: {{ l.heating }}{% if l.cooling %}. {% endif %}{% endif %}{% if l.cooling %}AC: {{ l.cooling }}{% endif %}</div></div>{% endif %}
-      {% if l.laundry %}<div class="feature-group"><div class="g-title">Laundry</div><div class="g-body">{{ l.laundry }}</div></div>{% endif %}
-      {% if l.parking_type %}<div class="feature-group"><div class="g-title">Parking &amp; Garage</div><div class="g-body">{{ l.parking_type }}{% if l.parking_spaces %} &middot; {{ l.parking_spaces }} space(s){% endif %}{% if l.garage_details %} &middot; {{ l.garage_details }}{% endif %}</div></div>{% endif %}
-      {% if l.amenities %}<div class="feature-group"><div class="g-title">Building Amenities</div><div class="g-body">{{ l.amenities }}</div></div>{% endif %}
+      {% if l.heating or l.cooling %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Heating &amp; Cooling</div><div class="g-body">{% if l.heating %}Heat: {{ l.heating }}{% if l.cooling %}. {% endif %}{% endif %}{% if l.cooling %}AC: {{ l.cooling }}{% endif %}</div></div>{% endif %}
+      {% if l.laundry %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Laundry</div><div class="g-body">{{ l.laundry }}</div></div>{% endif %}
+      {% if l.parking_type %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Parking &amp; Garage</div><div class="g-body">{{ l.parking_type }}{% if l.parking_spaces %} &middot; {{ l.parking_spaces }} space(s){% endif %}{% if l.garage_details %} &middot; {{ l.garage_details }}{% endif %}</div></div>{% endif %}
+      {% if l.amenities %}<div class="feature-group {{ 'dense' if page2_dense else '' }}"><div class="g-title">Building Amenities</div><div class="g-body">{{ l.amenities }}</div></div>{% endif %}
     </div>
   </div>
 
-  <div class="section-title">Assessment, Tax, Schools &amp; Pets</div>
+  <div class="section-title">Assessment, Tax &amp; Schools{% if pets_display or is_condo_like %} &amp; Pets{% endif %}</div>
   <div class="card-row">
     <div class="card">
       <div class="c-title">Assessment</div>
-      {% if l.assessment_amount %}<div class="c-line"><b>{{ l.assessment_amount }}</b> / {{ l.assessment_frequency or 'mo' }}</div>{% endif %}
-      {% if l.assessment_includes %}<div class="c-line">Includes: {{ l.assessment_includes }}</div>{% endif %}
+      {% if assessment_line_display %}<div class="c-line"><b>{{ assessment_line_display }}</b></div>{% endif %}
+      {% if l.assessment_includes and l.assessment_includes != 'None' %}<div class="c-line">Includes: {{ l.assessment_includes }}</div>{% endif %}
       {% if l.special_assessments %}<div class="c-line">Special: {{ l.special_assessments }}</div>{% endif %}
     </div>
     <div class="card">
@@ -451,10 +483,12 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
       {% if l.junior_high %}<div class="c-line">Jr High: {{ l.junior_high }}</div>{% endif %}
       {% if l.high_school %}<div class="c-line">High: {{ l.high_school }}</div>{% endif %}
     </div>
+    {% if pets_display or is_condo_like %}
     <div class="card">
       <div class="c-title">Pets</div>
       {% if pets_display %}<div class="c-line">{{ pets_display }}</div>{% else %}<div class="c-line">&mdash;</div>{% endif %}
     </div>
+    {% endif %}
   </div>
 
   <div class="compliance">

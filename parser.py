@@ -70,6 +70,32 @@ def _column_text(words, x_min, x_max, top_min, top_max, row_tol=3):
     return "\n".join(lines)
 
 
+def _degarble(text):
+    """Some source PDFs have a text-layer defect where two overlapping text
+    runs get interleaved character-by-character (e.g. "Appliances:" comes
+    out as "A p p li a n c e s :"), apparently from an MLS export quirk on
+    the original agent's end -- not something recoverable byte-for-byte on
+    our side. Left in place, it prevents every stop-label match after it
+    from ever firing, silently swallowing every real field that follows in
+    that column. This strips runs of 5+ consecutive 1-2 character "words"
+    (a strong signature of that corruption, essentially never occurring in
+    genuine field values) so extraction can pick back up cleanly at the
+    next real label."""
+    tokens = text.split(" ")
+    out = []
+    i = 0
+    while i < len(tokens):
+        j = i
+        while j < len(tokens) and len(tokens[j].strip(",:;-")) <= 2:
+            j += 1
+        if j - i >= 5:
+            i = j
+        else:
+            out.append(tokens[i])
+            i += 1
+    return " ".join(t for t in out if t)
+
+
 def money(s):
     if not s:
         return ""
@@ -116,6 +142,11 @@ class Listing:
     total_units: str = ""
     total_stories: str = ""
     unit_floor_level: str = ""
+
+    basement: str = ""
+    basement_bath: str = ""
+    fireplaces: str = ""
+    stories: str = ""
 
     assessment_amount: str = ""
     assessment_frequency: str = ""
@@ -220,10 +251,16 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # "Mkt. Time (Lst./Tot.)" is MRED's days-on-market field: the first
     # number is time on the *current* listing period, the second is
     # cumulative across any relists -- they differ only if this property
-    # has been relisted, so both are worth keeping.
+    # has been relisted, so both are worth keeping. Listings that are no
+    # longer straightforwardly active (e.g. status CTG/contingent) instead
+    # show a single "Lst. Mkt. Time:" total with no Lst./Tot. split.
     m = re.search(r"Mkt\.?\s*Time\s*\(Lst\.?/Tot\.?\):(\d+)\s*/\s*(\d+)", page1_text)
     if m:
         listing.dom_list_side, listing.dom_total = m.group(1), m.group(2)
+    else:
+        m = re.search(r"Lst\.?\s*Mkt\.?\s*Time:(\d+)", page1_text)
+        if m:
+            listing.dom_total = m.group(1)
 
     # --- Address ------------------------------------------------------------
     m = re.search(r"Address:(.*?),\s*([A-Za-z .]+),\s*([A-Z]{2})\s*(\d{5})", full_text)
@@ -265,6 +302,18 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     if m:
         listing.bathrooms_full, listing.bathrooms_half = m.group(1), m.group(2)
 
+    # Basement is a condo-irrelevant, detached/townhome-relevant field --
+    # whether it's finished, and what kind (English, walkout, crawl, etc.)
+    # is a significant selling point for single-family homes.
+    basement_val = _grab(page1_text, "Basement", ["Bsmnt. Bath", "\n"])
+    if basement_val and basement_val.lower() != "none":
+        listing.basement = basement_val
+        listing.basement_bath = _grab(page1_text, "Bsmnt. Bath", ["Parking Incl", "\n"])
+
+    m = re.search(r"#\s*Fireplaces:(\d+)", page1_text)
+    if m and m.group(1) != "0":
+        listing.fireplaces = m.group(1)
+
     m = re.search(r"Appx SF:\s*([\d,]+)", page1_text)
     if m:
         sf = m.group(1)
@@ -287,68 +336,129 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     if m:
         listing.parking_incl_in_price = m.group(1)
 
-    # --- 4-column block: School Data / Assessments / Tax / Pet Info --------------
-    # This section is laid out as 4 side-by-side columns in the source PDF; a
-    # plain linear text read jumbles them together, so we re-open the page and
-    # crop each column separately by its known x-range.
-    school_col = assess_col = tax_col = pet_col = ""
-    all_words = []
+    # --- Multi-page word index ----------------------------------------------------
+    # Different MRED export flavors put the same sections on different pages
+    # depending on how much content there is -- a long remarks paragraph or a
+    # big room grid can push the feature grid or the school/tax block onto
+    # page 2 instead of page 1 -- so anchor words are searched across every
+    # page rather than assuming a fixed page index.
+    pages_words = []
     page_width = 612
     left_margin = 14
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-            p1 = pdf.pages[0]
-            all_words = p1.extract_words()
-            page_width = p1.width
-            # The page's actual left margin varies by export source (native
-            # MRED PDF vs. a browser "Print to PDF", different browsers, etc),
-            # so anchor words are matched relative to the page's own margin
-            # rather than an absolute pixel value -- a hardcoded cutoff like
-            # "x0 < 20" is brittle and silently drops whole sections (school
-            # district, assessments, tax, pets) when a differently-exported
-            # sheet's margin is a few points wider.
-            if all_words:
-                left_margin = min(w["x0"] for w in all_words)
-            margin_cutoff = left_margin + 30
-            header_top = next((w["top"] for w in all_words if w["text"] == "School" and w["x0"] < margin_cutoff), None)
-            footer_top = next((w["top"] for w in all_words if w["text"] == "Square" and w["x0"] < margin_cutoff), None)
-            if header_top is not None and footer_top is not None:
-                top, bottom = header_top - 2, footer_top - 2
-                school_col = _column_text(all_words, 0, 165, top, bottom)
-                assess_col = _column_text(all_words, 165, 295, top, bottom)
-                tax_col = _column_text(all_words, 295, 450, top, bottom)
-                pet_col = _column_text(all_words, 450, page_width, top, bottom)
+            pages_words = [p.extract_words() for p in pdf.pages]
+            if pdf.pages:
+                page_width = pdf.pages[0].width
     except Exception:
         pass
+    all_words_flat = [w for words in pages_words for w in words]
+    if all_words_flat:
+        # The page's actual left margin varies by export source (native MRED
+        # PDF vs. a browser "Print to PDF", different browsers, etc), so
+        # anchor words are matched relative to the page's own margin rather
+        # than an absolute pixel value -- a hardcoded cutoff like "x0 < 20"
+        # is brittle and silently drops whole sections when a differently
+        # exported sheet's margin is a few points wider.
+        left_margin = min(w["x0"] for w in all_words_flat)
+    margin_cutoff = left_margin + 30
 
-    listing.assessment_amount = money("$" + _first_num(_grab(assess_col, "Amount", ["\n"])))
-    listing.assessment_frequency = _grab(assess_col, "Frequency", ["\n"])
-    listing.special_assessments = _grab(assess_col, "Special Assessments", ["\n"])
+    def _find(text, x0_max=None):
+        """First (page_index, words, top, x0) match for an exact word,
+        searched page by page in order, optionally constrained near the
+        left margin."""
+        for pi, words in enumerate(pages_words):
+            for w in words:
+                if w["text"] == text and (x0_max is None or w["x0"] < x0_max):
+                    return pi, words, w["top"], w["x0"]
+        return None
 
-    listing.tax_amount = money("$" + _first_num(_grab(tax_col, "Amount", ["\n"])))
-    listing.tax_year = _grab(tax_col, "Tax Year", ["\n"])
+    def _find_on(words, text, x0_max=None, top_min=None):
+        w = next(
+            (
+                w for w in words
+                if w["text"] == text
+                and (x0_max is None or w["x0"] < x0_max)
+                and (top_min is None or w["top"] >= top_min)
+            ),
+            None,
+        )
+        return w["top"] if w else None
 
-    # "Mult PINs" and "Tax Exmps" values can wrap onto a second line within
-    # this column (e.g. "Mult PINs: (See Agent\nRemarks)"), so flatten
-    # newlines to spaces first rather than grabbing from the raw column
-    # text, which would truncate at the wrap.
-    tax_col_flat = re.sub(r"\s*\n\s*", " ", tax_col)
-    listing.mult_pins = _grab(tax_col_flat, "Mult PINs", ["Tax Year", "$"])
-    listing.tax_exemptions = _grab(tax_col_flat, "Tax Exmps", ["Coop Tax Deduction", "$"])
+    # Detached/fee-simple listings don't carry a Pet Info column (no HOA
+    # pet rules), so MRED swaps it for a "Miscellaneous" column instead --
+    # that word only ever appears in that layout, making it a clean
+    # discriminator for which of the two block layouts this sheet uses.
+    has_misc_column = any(w["text"] == "Miscellaneous" for words in pages_words for w in words)
 
-    listing.elementary = _grab(school_col, "Elementary", ["\n"])
-    listing.junior_high = _grab(school_col, "Junior High", ["\n"])
-    listing.high_school = _grab(school_col, "High School", ["\n"])
+    school_col = assess_col = tax_col = pet_col = ""
 
-    # Stop at "Pet Weight:" (the field label, with its colon) as well as
-    # "Max Pet Weight" -- on some sheets the word "Max" lands a hair's-width
-    # inside the neighboring tax column (its x-position is right at the
-    # column boundary), leaving an orphaned "Pet Weight:000" fragment in
-    # this column that "Max Pet Weight" alone wouldn't catch as a stop
-    # point. The colon is required so this doesn't also match the legit
-    # pet-policy phrase "Pet Weight Limitation" (no colon) that can appear
-    # earlier in this same value.
-    listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "Pet Weight:", "$"])
+    if has_misc_column:
+        # Detached-style layout: "School Data" is its own single-column
+        # block, followed further down the page by a separate 3-column
+        # "Assessments / Tax / Miscellaneous" row. Unlike the condo 4-column
+        # block, each row here already reads correctly left-to-right in
+        # plain text (nothing else sits beside "School Data" at its height),
+        # so pull values directly with regex instead of reconstructing
+        # columns by x-position, which isn't stable in this layout (the
+        # whole block sits in a variable-width sidebar next to the remarks
+        # paragraph rather than spanning the full page width).
+        listing.elementary = _grab(full_text, "Elementary", ["\n"])
+        listing.junior_high = _grab(full_text, "Junior High", ["\n"])
+        listing.high_school = _grab(full_text, "High School", ["\n"])
+
+        m = re.search(r"Amount:\$?([\d,]+(?:\.\d+)?)\s*Amount:\$?([\d,]+(?:\.\d+)?)", full_text)
+        if m:
+            listing.assessment_amount = money("$" + m.group(1))
+            listing.tax_amount = money("$" + m.group(2))
+        listing.special_assessments = _grab(full_text, "Special Assessments", ["Tax Year", "\n"])
+        listing.tax_year = _grab(full_text, "Tax Year", ["Flood Zone", "\n"])
+        listing.tax_exemptions = _grab(full_text, "Tax Exmps", ["Appx SF", "Main +", "\n"])
+        listing.mult_pins = _grab(full_text, "Mult PINs", ["Habitable", "\n"])
+    else:
+        # Condo/attached layout: School Data / Assessments / Tax / Pet Info
+        # all sit in one shared 4-column row, so a plain linear read jumbles
+        # them together -- crop each column separately by its known x-range.
+        header_hit = _find("School", margin_cutoff)
+        footer_hit = _find("Square", margin_cutoff)
+        if header_hit and footer_hit and header_hit[0] == footer_hit[0]:
+            _, words, header_top, _ = header_hit
+            _, _, footer_top, _ = footer_hit
+            top, bottom = header_top - 2, footer_top - 2
+            school_col = _column_text(words, 0, 165, top, bottom)
+            assess_col = _column_text(words, 165, 295, top, bottom)
+            tax_col = _column_text(words, 295, 450, top, bottom)
+            pet_col = _column_text(words, 450, page_width, top, bottom)
+
+        listing.assessment_amount = money("$" + _first_num(_grab(assess_col, "Amount", ["\n"])))
+        listing.assessment_frequency = _grab(assess_col, "Frequency", ["\n"])
+        listing.special_assessments = _grab(assess_col, "Special Assessments", ["\n"])
+
+        listing.tax_amount = money("$" + _first_num(_grab(tax_col, "Amount", ["\n"])))
+        listing.tax_year = _grab(tax_col, "Tax Year", ["\n"])
+
+        # "Mult PINs" and "Tax Exmps" values can wrap onto a second line
+        # within this column (e.g. "Mult PINs: (See Agent\nRemarks)"), so
+        # flatten newlines to spaces first rather than grabbing from the raw
+        # column text, which would truncate at the wrap.
+        tax_col_flat = re.sub(r"\s*\n\s*", " ", tax_col)
+        listing.mult_pins = _grab(tax_col_flat, "Mult PINs", ["Tax Year", "$"])
+        listing.tax_exemptions = _grab(tax_col_flat, "Tax Exmps", ["Coop Tax Deduction", "$"])
+
+        listing.elementary = _grab(school_col, "Elementary", ["\n"])
+        listing.junior_high = _grab(school_col, "Junior High", ["\n"])
+        listing.high_school = _grab(school_col, "High School", ["\n"])
+
+        # Stop at "Pet Weight:" (the field label, with its colon) as well as
+        # "Max Pet Weight" -- on some sheets the word "Max" lands a hair's-
+        # width inside the neighboring tax column (its x-position is right
+        # at the column boundary), leaving an orphaned "Pet Weight:000"
+        # fragment in this column that "Max Pet Weight" alone wouldn't catch
+        # as a stop point. The colon is required so this doesn't also match
+        # the legit pet-policy phrase "Pet Weight Limitation" (no colon)
+        # that can appear earlier in this same value.
+        listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "Pet Weight:", "$"])
+
     m = re.search(r"Max Pet Weight:(\d+)", page1_text)
     if m:
         # MRED zero-fills this field ("000") when no specific limit was
@@ -371,57 +481,117 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     feat_col1 = feat_col2 = feat_col3 = ""
     rooms_left = rooms_right = ""
     try:
-        words = all_words or []
+        grid_hit = _find("Age:")
+        if grid_hit:
+            gi, words, grid_top, _ = grid_hit
+            # Bottom boundary: prefer "Broker Private Remarks:" (present on
+            # the fuller "Agent" report exports); fall back to the standard
+            # MRED copyright disclaimer line, which every export flavor
+            # seems to carry, for the shorter "Customer"-style exports that
+            # omit broker remarks entirely. Both are looked up on the same
+            # page as the grid itself, not just the first page they appear
+            # on anywhere in the document (the copyright line repeats on
+            # every page).
+            bottom_top = _find_on(words, "Broker", margin_cutoff) or _find_on(words, "Copyright", margin_cutoff)
+            if bottom_top is not None:
+                top, bottom = grid_top - 2, bottom_top - 2
+                # Flatten to single-line-per-column text: every field we pull
+                # out of this grid is a short label:value pair, and MRED
+                # wraps long values (e.g. "Garage Door Opener(s), Heated,
+                # Tandem") onto a second line within the same cell, so
+                # newlines here are just wrapping, not meaningful row breaks.
+                feat_col1 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 0, 195, top, bottom)))
+                feat_col2 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 195, 395, top, bottom)))
+                feat_col3 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 395, page_width, top, bottom)))
 
-        def word_top(text):
-            w = next((w for w in words if w["text"] == text), None)
-            return w["top"] if w else None
-
-        grid_top = word_top("Age:")
-        margin_cutoff = left_margin + 30
-        brm_top = next((w["top"] for w in words if w["text"] == "Broker" and w["x0"] < margin_cutoff), None)
-        if grid_top is not None and brm_top is not None:
-            top, bottom = grid_top - 2, brm_top - 2
-            # Flatten to single-line-per-column text: every field we pull out of
-            # this grid is a short label:value pair, and MRED wraps long values
-            # (e.g. "Garage Door Opener(s), Heated, Tandem") onto a second line
-            # within the same cell, so newlines here are just wrapping, not
-            # meaningful row breaks.
-            feat_col1 = re.sub(r"\s*\n\s*", " ", _column_text(words, 0, 195, top, bottom))
-            feat_col2 = re.sub(r"\s*\n\s*", " ", _column_text(words, 195, 395, top, bottom))
-            feat_col3 = re.sub(r"\s*\n\s*", " ", _column_text(words, 395, page_width, top, bottom))
-
-        room_hdr_top = next((w["top"] for w in words if w["text"] == "Room" and w["x0"] < margin_cutoff), None)
-        interior_top = word_top("Interior")
-        if room_hdr_top is not None and interior_top is not None:
-            top, bottom = room_hdr_top - 2, interior_top - 2
-            rooms_left = _column_text(words, 0, 306, top, bottom)
-            rooms_right = _column_text(words, 306, page_width, top, bottom)
+        room_hdr_hit = _find("Room", margin_cutoff)
+        if room_hdr_hit:
+            ri, words, room_hdr_top, _ = room_hdr_hit
+            interior_top = _find_on(words, "Interior", top_min=room_hdr_top)
+            if interior_top is not None:
+                top, bottom = room_hdr_top - 2, interior_top - 2
+                rooms_left = _column_text(words, 0, 306, top, bottom)
+                rooms_right = _column_text(words, 306, page_width, top, bottom)
     except Exception:
         pass
 
+    # The feature grid's exact set/order of fields varies by property type
+    # (a detached home adds Attic/Basement Details/Additional Rooms/Gas
+    # Supplier/etc that a condo sheet doesn't carry), and some source PDFs
+    # have individual field labels with corrupted character spacing (a
+    # defect in that PDF's own text layer -- e.g. "A p p li a n c e s :" --
+    # not something fixable on our end) that breaks an exact stop-label
+    # match. Rather than hardcode one stop label per field, which silently
+    # swallows everything up to the next label that DOES happen to match,
+    # every grab below is also bounded by this shared list of every label
+    # that can plausibly appear in this grid, so a grab always stops at the
+    # next real field even when its own "preferred" neighbor isn't reachable.
+    FEAT_LABELS = [
+        "Age:", "Type:", "Style:", "Exterior:",
+        "Heating:", "Air Cond:", "Kitchen:", "Appliances:", "Dining:", "Attic:",
+        "Basement Details:", "Bath Amn:", "Fireplace Details:", "Fireplace Location:",
+        "Electricity:", "Equipment:", "Additional Rooms:", "Other Structures:",
+        "Door Features:", "Window Features:", "Gas Supplier:", "Electric Supplier:",
+        "Laundry Features:", "Garage Ownership:", "Garage On Site:", "Garage Type:",
+        "Garage Details:", "Parking Ownership:", "Parking On Site:", "Parking Details:",
+        "Parking Fee", "Driveway:", "Foundation:", "Exst Bas/Fnd:", "Disability Access:",
+        "Disability Details:", "Lot Size:", "Lot Size Source:", "Lot Desc:",
+        "Zero Lot Line:", "Relist:", "Roof:", "Sewer:", "Water:", "Const Opts:",
+        "General Info:", "Amenities:", "Asmt Incl:", "HERS Index Score:",
+        "Green Disc", "Green Rating Source:", "Green Feats:", "Sale Terms:",
+        "Possession:", "Occ Date:", "Est Occp Date:", "Management:", "Rural:",
+        "Vacant:", "Addl. Sales Info.:", "Broker Owned/Interest:",
+    ]
+
+    def _grab_feat(text, label, primary_stops=()):
+        return _grab(text, label, list(primary_stops) + FEAT_LABELS)
+
     listing.interior_features = _grab(full_text, "Interior Property Features", ["Exterior Property Features"])
     listing.exterior_features = _grab(full_text, "Exterior Property Features", ["Age:"])
-    listing.heating = _grab(feat_col1, "Heating", ["Kitchen:"])
-    listing.cooling = _grab(feat_col1, "Air Cond", ["Heating:"])
-    listing.kitchen_features = _grab(feat_col1, "Kitchen", ["Appliances:"])
-    listing.appliances = _grab(feat_col1, "Appliances", ["Dining:"])
-    listing.bath_amenities = _grab(feat_col1, "Bath Amn", ["Fireplace Details:"])
-    listing.amenities = _grab(feat_col3, "Amenities", ["Asmt Incl:"])
-    listing.laundry = _grab(feat_col2, "Laundry Features", ["Garage Ownership:"])
-    listing.age = _grab(feat_col1, "Age", ["Type:"]) or listing.age
+    listing.heating = _grab_feat(feat_col1, "Heating")
+    listing.cooling = _grab_feat(feat_col1, "Air Cond")
+    listing.kitchen_features = _grab_feat(feat_col1, "Kitchen")
+    listing.appliances = _grab_feat(feat_col1, "Appliances")
+    listing.bath_amenities = _grab_feat(feat_col1, "Bath Amn")
+    listing.amenities = _grab_feat(feat_col3, "Amenities")
+    listing.laundry = _grab_feat(feat_col2, "Laundry Features")
+    listing.age = _grab_feat(feat_col1, "Age") or listing.age
     m = re.search(r"\bParking:(Garage|None|Space/s|Assigned Spaces|Off Street|Driveway|N/A)", page1_text)
     listing.parking_type = m.group(1) if m else ""
-    listing.garage_details = _grab(feat_col2, "Garage Details", ["Parking Ownership:"])
+    listing.garage_details = _grab_feat(feat_col2, "Garage Details")
+
+    # Number of stories in the home itself (distinct from a condo building's
+    # "# Stories:", which is about the building, not the unit) -- shown as
+    # its own quick fact for detached/townhome listings.
+    type_val = _grab(feat_col1, "Type", ["Style:"])
+    m = re.search(r"(\d+)\+?\s*Stor(?:y|ies)", type_val)
+    if m:
+        listing.stories = m.group(1)
 
     # --- Room dimension tables (two side-by-side mini tables) ---------------------
+    # MRED's room-name picklist is large, especially once a listing has a
+    # finished basement or extra levels (dens, decks, storage, etc.) -- this
+    # whitelist needs to be generous, since any room name not on it is
+    # silently dropped from the table rather than just displayed oddly.
+    ROOM_NAMES = (
+        r"Living Room|Dining Room|Kitchen|Family Room|Great Room|"
+        r"Master Bedroom|2nd Bedroom|3rd Bedroom|4th Bedroom|5th Bedroom|6th Bedroom|"
+        r"Laundry Room|Laundry|Mud Room|Walk In Closet|Walk-In Closet|"
+        r"Deck|Terrace|Balcony|Porch|Enclosed Porch|Screened Porch|Patio|"
+        r"Storage|Recreation Room|Rec Room|Bonus Room|Loft|Office|Den|Study|"
+        r"Library|Sun Room|Sunroom|Heated Sun Room|Foyer|Gallery|Atrium|"
+        r"Exercise Room|Media Room|Game Room|Theatre Room|Sitting Room|"
+        r"Breakfast Room|Eating Area|Dinette|Utility Room|Workshop|"
+        r"Bar/Entertainment|Pantry|Play Room|Wine Cellar|Craft Room|Tandem Room"
+    )
+
     def parse_room_column(col_text):
         rooms = []
         for line in col_text.splitlines():
             line = line.strip()
             m = re.match(
-                r"(Living Room|Dining Room|Kitchen|Family Room|Master Bedroom|2nd Bedroom|3rd Bedroom|4th Bedroom|Laundry Room)"
-                r"\s*([\dX]+|COMBO)?\s*(Main Level|2nd Level|Lower Level|Basement)?\s*(Hardwood|Carpet|Ceramic Tile|Vinyl|Marble|Wood Laminate)?",
+                r"(" + ROOM_NAMES + r")"
+                r"\s*([\dX]+|COMBO)?\s*(Main Level|2nd Level|3rd Level|Lower Level|Basement)?\s*(Hardwood|Carpet|Ceramic Tile|Vinyl|Marble|Wood Laminate|Luxury Vinyl|Other)?",
                 line,
             )
             if not m:

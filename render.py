@@ -30,6 +30,12 @@ STATUS_LABELS = {
     "ACTV": "For Sale",
     "PCH": "Price Change",
     "BOM": "Back on Market",
+    "CTG": "Contingent",
+    "PCNG": "Pending",
+    "PEND": "Pending",
+    "ATTY": "Attorney Review",
+    "SOLD": "Sold",
+    "CLSD": "Sold",
 }
 
 
@@ -137,6 +143,44 @@ def pets_display(listing):
     return base
 
 
+def basement_display(listing):
+    """Basement type plus whether it has its own bathroom -- a detached/
+    townhome-relevant field that doesn't apply to condos."""
+    base = (listing.basement or "").strip()
+    if not base:
+        return ""
+    if (listing.basement_bath or "").strip().lower() == "yes":
+        return f"{base} (bath included)"
+    return base
+
+
+def assessment_line_display(listing):
+    """The Assessment card's headline figure. Fee-simple/detached homes
+    with no HOA still carry an "Amount:$0" field -- showing that literally
+    ("$0 / mo") reads like a data error, so call out plainly that there's
+    no HOA/association fee instead."""
+    amt = (listing.assessment_amount or "").strip()
+    if not amt:
+        return ""
+    if amt in ("$0", "$0.00"):
+        return "No HOA / Association Fee"
+    return f"{amt} / {listing.assessment_frequency or 'mo'}"
+
+
+def remarks_size_class(remarks: str):
+    """Longer agent remarks (common on content-rich detached single-family
+    listings) need a tighter type scale to still fit page 1 of the fixed
+    2-page layout, rather than spilling remarks onto their own extra page."""
+    words = len((remarks or "").split())
+    if words > 420:
+        return "very-tight"
+    if words > 320:
+        return "tight"
+    if words > 240:
+        return "condensed"
+    return ""
+
+
 def render_flyer(
     listing,
     output_path,
@@ -158,7 +202,79 @@ def render_flyer(
         tmp_photo.close()
         photo_path = tmp_photo.name
 
+        # Some MRED-exported listing photos are pillarboxed/letterboxed --
+        # a portrait (or otherwise off-aspect) source photo gets padded with
+        # solid black bars to fill a fixed thumbnail frame, and that black
+        # padding is baked into the actual pixel data (not a metadata or
+        # rendering issue -- it reproduces identically across every PDF
+        # renderer because it's simply what the image contains). Detect and
+        # crop out uniform black bars from the outer edges before use so
+        # the hero photo box shows just the real photo, scaled/cropped
+        # sensibly by `background-size: cover` instead of a tiny image
+        # framed in black.
+        try:
+            from PIL import Image
+
+            def _autocrop_black_bars(im, thresh=12, max_std=6):
+                im = im.convert("RGB")
+                w, h = im.size
+                px = im.load()
+
+                def col_is_bar(x):
+                    vals = [px[x, y] for y in range(0, h, max(1, h // 50))]
+                    means = [sum(v) / 3 for v in vals]
+                    avg = sum(means) / len(means)
+                    if avg > thresh:
+                        return False
+                    var = sum((m - avg) ** 2 for m in means) / len(means)
+                    return var ** 0.5 <= max_std
+
+                def row_is_bar(y):
+                    vals = [px[x, y] for x in range(0, w, max(1, w // 50))]
+                    means = [sum(v) / 3 for v in vals]
+                    avg = sum(means) / len(means)
+                    if avg > thresh:
+                        return False
+                    var = sum((m - avg) ** 2 for m in means) / len(means)
+                    return var ** 0.5 <= max_std
+
+                left = 0
+                while left < w // 2 and col_is_bar(left):
+                    left += 1
+                right = w - 1
+                while right > w // 2 and col_is_bar(right):
+                    right -= 1
+                top = 0
+                while top < h // 2 and row_is_bar(top):
+                    top += 1
+                bottom = h - 1
+                while bottom > h // 2 and row_is_bar(bottom):
+                    bottom -= 1
+
+                if left == 0 and right == w - 1 and top == 0 and bottom == h - 1:
+                    return im
+                # Guard against over-cropping a genuinely dark photo (e.g. a
+                # dusk/night exterior shot): only accept the crop if it still
+                # leaves a reasonably sized image.
+                cropped = im.crop((left, top, right + 1, bottom + 1))
+                if cropped.width < w * 0.3 or cropped.height < h * 0.3:
+                    return im
+                return cropped
+
+            with Image.open(photo_path) as im:
+                im = _autocrop_black_bars(im)
+                im.save(photo_path, format="JPEG", quality=90, dpi=(96, 96))
+        except Exception:
+            pass
+
     lead, rest = split_remarks(listing.remarks)
+    size_class = remarks_size_class(listing.remarks)
+    # For very long remarks, skip the larger italic pull-quote treatment
+    # entirely (it costs extra vertical space for no informational gain --
+    # the quote is just the opening sentence, already in the body) and run
+    # the whole passage at the tight, uniform body size instead.
+    if size_class == "very-tight":
+        lead, rest = "", (listing.remarks or "").strip()
 
     html_str = template.render(
         l=listing,
@@ -168,6 +284,8 @@ def render_flyer(
         status_label=STATUS_LABELS.get(listing.status, listing.status or "For Sale"),
         remarks_lead=lead,
         remarks_rest=rest,
+        remarks_size_class=size_class,
+        page2_dense=len(listing.rooms or []) > 12,
         friendly_type=friendly_property_type(listing),
         agent_phone=agent_phone,
         agent_email=agent_email,
@@ -178,6 +296,9 @@ def render_flyer(
         market_time_display=market_time_display(listing),
         mult_pins_display=mult_pins_display(listing),
         pets_display=pets_display(listing),
+        basement_display=basement_display(listing),
+        assessment_line_display=assessment_line_display(listing),
+        is_condo_like=(listing.ownership or "").strip().lower() in ("condo", "co-op"),
         prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
     )
 

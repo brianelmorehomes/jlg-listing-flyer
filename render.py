@@ -15,6 +15,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 FONT_DIR = os.path.join(STATIC_DIR, "fonts")
 LOGO_LOCKUP = os.path.join(STATIC_DIR, "logo", "jlg_atproperties_christies_lockup.png")
+# Some printers/drivers render the brand's saturated red (@properties' "@"
+# symbol) as near-black instead of red, no matter the print quality setting
+# -- that's a printer color-management issue, not something fixable from the
+# PDF side. Per @properties/Christie's own marketing guidelines: "If a piece
+# is in black and white, the logo must either be all white or all black --
+# no greyscale is permitted." This all-black lockup (red channel desaturated
+# to match the surrounding black/white luminance, so anti-aliased edges stay
+# smooth) is the compliant fallback for exactly that situation.
+LOGO_LOCKUP_BW = os.path.join(STATIC_DIR, "logo", "jlg_atproperties_christies_lockup_blackonly.png")
 
 STATUS_LABELS = {
     "NEW": "New Listing",
@@ -134,6 +143,7 @@ def render_flyer(
     agent_phone="",
     agent_email="brian@justinlucasgroup.com",
     agent_name="Brian Elmore",
+    print_safe_logo=False,
 ):
     env = Environment(loader=FileSystemLoader(os.path.join(BASE_DIR, "templates")))
     template = env.get_template("flyer.html")
@@ -153,7 +163,7 @@ def render_flyer(
     html_str = template.render(
         l=listing,
         font_dir=FONT_DIR,
-        logo_lockup=LOGO_LOCKUP,
+        logo_lockup=LOGO_LOCKUP_BW if print_safe_logo else LOGO_LOCKUP,
         photo_path=photo_path,
         status_label=STATUS_LABELS.get(listing.status, listing.status or "For Sale"),
         remarks_lead=lead,

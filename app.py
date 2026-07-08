@@ -99,6 +99,13 @@ PAGE = """
     <div style="font-size:11.5px;color:#888;margin-top:8px;">
       Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings. Remembered on this browser only.
     </div>
+    <label style="display:flex;align-items:center;gap:7px;margin-top:14px;font-size:12.5px;color:#444;cursor:pointer;">
+      <input type="checkbox" id="printSafeLogo" style="margin:0;">
+      Print-safe logo (black &amp; white)
+    </label>
+    <div style="font-size:11.5px;color:#888;margin-top:3px;">
+      Some printers render our brand red as near-black no matter the print quality setting &mdash; that's a printer issue, not a PDF issue. Check this to use an all-black version of the logo instead (this is @properties' own approved black-and-white fallback, not a workaround). Remembered on this browser only.
+    </div>
   </div>
 
   <div class="card">
@@ -122,14 +129,17 @@ const zipWrap = document.getElementById('zipWrap');
 const nameEl = document.getElementById('agentName');
 const phoneEl = document.getElementById('agentPhone');
 const emailEl = document.getElementById('agentEmail');
+const printSafeLogoEl = document.getElementById('printSafeLogo');
 
 // Remember the agent's name/phone/email in this browser (no server-side storage).
 nameEl.value = localStorage.getItem('jlg_agent_name') || '{{ default_name }}';
 phoneEl.value = localStorage.getItem('jlg_agent_phone') || '{{ default_phone }}';
 emailEl.value = localStorage.getItem('jlg_agent_email') || '{{ default_email }}';
+printSafeLogoEl.checked = localStorage.getItem('jlg_print_safe_logo') === '1';
 nameEl.addEventListener('change', () => localStorage.setItem('jlg_agent_name', nameEl.value));
 phoneEl.addEventListener('change', () => localStorage.setItem('jlg_agent_phone', phoneEl.value));
 emailEl.addEventListener('change', () => localStorage.setItem('jlg_agent_email', emailEl.value));
+printSafeLogoEl.addEventListener('change', () => localStorage.setItem('jlg_print_safe_logo', printSafeLogoEl.checked ? '1' : '0'));
 
 let lastConverted = [];
 
@@ -157,6 +167,7 @@ function handleFiles(fileList) {
   form.append('agent_name', nameEl.value);
   form.append('agent_phone', phoneEl.value);
   form.append('agent_email', emailEl.value);
+  form.append('print_safe_logo', printSafeLogoEl.checked ? '1' : '');
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
@@ -237,6 +248,7 @@ def convert():
     agent_name = request.form.get("agent_name", "").strip() or DEFAULT_AGENT_NAME
     agent_phone = request.form.get("agent_phone", "").strip() or DEFAULT_AGENT_PHONE
     agent_email = request.form.get("agent_email", "").strip() or DEFAULT_AGENT_EMAIL
+    print_safe_logo = bool(request.form.get("print_safe_logo", "").strip())
 
     files = request.files.getlist("files")
     results = []
@@ -258,7 +270,14 @@ def convert():
 
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp_path = tmp.name
-            render_flyer(listing, tmp_path, agent_phone=agent_phone, agent_email=agent_email, agent_name=agent_name)
+            render_flyer(
+                listing,
+                tmp_path,
+                agent_phone=agent_phone,
+                agent_email=agent_email,
+                agent_name=agent_name,
+                print_safe_logo=print_safe_logo,
+            )
 
             with open(tmp_path, "rb") as fh:
                 pdf_bytes = fh.read()

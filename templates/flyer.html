@@ -137,8 +137,14 @@ h1, h2, h3 { margin: 0; padding: 0; }
 .facts-strip {
   display: flex;
   background: var(--slate);
-  border-radius: 3px;
-  padding: 10px 4px;
+  border-radius: 3px 3px 0 0;
+  padding: 10px 4px 8px;
+}
+.facts-strip-secondary {
+  display: flex;
+  background: #e9ecee;
+  border-radius: 0 0 3px 3px;
+  padding: 8px 4px;
   margin-bottom: 16px;
 }
 .fact {
@@ -155,11 +161,19 @@ h1, h2, h3 { margin: 0; padding: 0; }
   color: var(--broker-blue);
   display: block;
 }
+.facts-strip-secondary .fact .num { font-size: 12pt; }
 .fact .lbl {
   font-size: 6.8pt;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--granite);
+}
+.fact .note {
+  display: block;
+  font-size: 7pt;
+  font-weight: 600;
+  color: var(--broker-blue);
+  margin-top: 1px;
 }
 
 /* ---------- Section headers ---------- */
@@ -307,7 +321,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   <img class="lockup" src="file://{{ logo_lockup }}">
   <div class="meta">
     <div class="mls">MLS #{{ l.mls_number }}</div>
-    <div>Prepared for you by Brian Elmore</div>
+    <div>Prepared for you by {{ agent_name }}</div>
   </div>
 </div>
 
@@ -332,9 +346,16 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
 <div class="facts-strip">
   <div class="fact"><span class="num">{{ l.bedrooms or '—' }}</span><span class="lbl">Beds</span></div>
   <div class="fact"><span class="num">{{ l.bathrooms_display or '—' }}</span><span class="lbl">Baths</span></div>
-  {% if l.approx_sf %}<div class="fact"><span class="num">{{ l.approx_sf }}</span><span class="lbl">Sq Ft</span></div>{% endif %}
+  <div class="fact"><span class="num">{{ sqft_display }}</span><span class="lbl">Sq Ft</span></div>
+  <div class="fact"><span class="num">{{ lot_size_display }}</span><span class="lbl">Lot Size</span></div>
   <div class="fact"><span class="num">{{ l.year_built or '—' }}</span><span class="lbl">Year Built</span></div>
-  <div class="fact"><span class="num">{{ l.parking_spaces or ('—' if not l.parking_type else '') }}{{ ' ' if l.parking_spaces else '' }}{{ l.parking_type or '' }}</span><span class="lbl">Parking</span></div>
+</div>
+<div class="facts-strip-secondary">
+  <div class="fact">
+    <span class="num">{{ l.parking_spaces or ('—' if not l.parking_type else '') }}{{ ' ' if l.parking_spaces else '' }}{{ l.parking_type or '' }}</span>
+    <span class="lbl">Parking</span>
+    {% if parking_note %}<span class="note">{{ parking_note }}</span>{% endif %}
+  </div>
   <div class="fact"><span class="num">{{ l.rooms_total or '—' }}</span><span class="lbl">Total Rooms</span></div>
 </div>
 
@@ -415,7 +436,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
         <svg width="17" height="17" viewBox="0 0 24 24"><circle cx="12" cy="12" r="11" fill="none" stroke="#404042" stroke-width="1.4"/><text x="12" y="17" text-anchor="middle" font-size="13" font-family="Work Sans" font-weight="700" fill="#404042">R</text></svg>
       </div>
       <div class="agent-line">
-        Brian Elmore
+        {{ agent_name }}
         <div class="sub">{{ agent_phone }}{% if agent_phone and agent_email %} &nbsp;&middot;&nbsp; {% endif %}{{ agent_email }}</div>
       </div>
     </div>

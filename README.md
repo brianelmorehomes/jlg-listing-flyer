@@ -42,10 +42,13 @@ fastest). Free tier is fine for this.
   and set the environment to **Docker** automatically. If it asks you to pick
   manually: Environment = **Docker**, Plan = **Free**.
 - Under **Environment Variables**, set:
+  - `AGENT_NAME` &mdash; e.g. `Brian Elmore` (whoever the flyer is "prepared by" by default)
   - `AGENT_PHONE` &mdash; your phone number, e.g. `312.989.0512`
   - `AGENT_EMAIL` &mdash; e.g. `brian@justinlucasgroup.com`
-  (Anyone using the tool can still override these per-session in the browser;
-  this just sets what shows up by default.)
+  (Anyone using the tool can change all three per-session right in the
+  browser before converting &mdash; handy when Camille is generating a flyer
+  for Justin's or Eric's listing. This just sets the default shown when the
+  page first loads.)
 - Click **Create Web Service**.
 
 First build takes 3-5 minutes (it's installing Pango/Cairo and Python

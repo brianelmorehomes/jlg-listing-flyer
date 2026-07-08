@@ -28,6 +28,7 @@ from render import render_flyer
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB total upload cap
 
+DEFAULT_AGENT_NAME = os.environ.get("AGENT_NAME", "Brian Elmore")
 DEFAULT_AGENT_PHONE = os.environ.get("AGENT_PHONE", "")
 DEFAULT_AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "brian@justinlucasgroup.com")
 
@@ -83,13 +84,20 @@ PAGE = """
   <div class="card">
     <div class="settings-row">
       <div>
-        <label>Your phone (shown on flyer footer)</label>
+        <label>Prepared for / agent name (shown on flyer)</label>
+        <input type="text" id="agentName" placeholder="Brian Elmore">
+      </div>
+      <div>
+        <label>Phone (shown on flyer footer)</label>
         <input type="text" id="agentPhone" placeholder="312.555.0100">
       </div>
       <div>
-        <label>Your email (shown on flyer footer)</label>
+        <label>Email (shown on flyer footer)</label>
         <input type="text" id="agentEmail">
       </div>
+    </div>
+    <div style="font-size:11.5px;color:#888;margin-top:8px;">
+      Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings. Remembered on this browser only.
     </div>
   </div>
 
@@ -111,12 +119,15 @@ const fileInput = document.getElementById('fileInput');
 const results = document.getElementById('results');
 const statusEl = document.getElementById('status');
 const zipWrap = document.getElementById('zipWrap');
+const nameEl = document.getElementById('agentName');
 const phoneEl = document.getElementById('agentPhone');
 const emailEl = document.getElementById('agentEmail');
 
-// Remember the agent's phone/email in this browser (no server-side storage).
+// Remember the agent's name/phone/email in this browser (no server-side storage).
+nameEl.value = localStorage.getItem('jlg_agent_name') || '{{ default_name }}';
 phoneEl.value = localStorage.getItem('jlg_agent_phone') || '{{ default_phone }}';
 emailEl.value = localStorage.getItem('jlg_agent_email') || '{{ default_email }}';
+nameEl.addEventListener('change', () => localStorage.setItem('jlg_agent_name', nameEl.value));
 phoneEl.addEventListener('change', () => localStorage.setItem('jlg_agent_phone', phoneEl.value));
 emailEl.addEventListener('change', () => localStorage.setItem('jlg_agent_email', emailEl.value));
 
@@ -143,6 +154,9 @@ function handleFiles(fileList) {
   if (!fileList || !fileList.length) return;
   const form = new FormData();
   for (const f of fileList) form.append('files', f);
+  form.append('agent_name', nameEl.value);
+  form.append('agent_phone', phoneEl.value);
+  form.append('agent_email', emailEl.value);
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
@@ -206,7 +220,10 @@ function downloadZip() {
 @app.route("/")
 def index():
     return render_template_string(
-        PAGE, default_phone=DEFAULT_AGENT_PHONE, default_email=DEFAULT_AGENT_EMAIL
+        PAGE,
+        default_name=DEFAULT_AGENT_NAME,
+        default_phone=DEFAULT_AGENT_PHONE,
+        default_email=DEFAULT_AGENT_EMAIL,
     )
 
 
@@ -217,6 +234,10 @@ def healthz():
 
 @app.route("/convert", methods=["POST"])
 def convert():
+    agent_name = request.form.get("agent_name", "").strip() or DEFAULT_AGENT_NAME
+    agent_phone = request.form.get("agent_phone", "").strip() or DEFAULT_AGENT_PHONE
+    agent_email = request.form.get("agent_email", "").strip() or DEFAULT_AGENT_EMAIL
+
     files = request.files.getlist("files")
     results = []
     used_names = set()
@@ -237,7 +258,7 @@ def convert():
 
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
                 tmp_path = tmp.name
-            render_flyer(listing, tmp_path)
+            render_flyer(listing, tmp_path, agent_phone=agent_phone, agent_email=agent_email, agent_name=agent_name)
 
             with open(tmp_path, "rb") as fh:
                 pdf_bytes = fh.read()

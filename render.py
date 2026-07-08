@@ -56,7 +56,35 @@ def friendly_property_type(listing):
     return ptype or "Residential"
 
 
-def render_flyer(listing, output_path, agent_phone="", agent_email="brian@justinlucasgroup.com"):
+def lot_size_display(listing):
+    """Format the MRED 'Dimensions' (lot size) field for buyer-facing display."""
+    val = (listing.lot_size or "").strip()
+    if not val:
+        return "TBD"
+    if val.upper() == "COMMON":
+        return "Common"
+    return val
+
+
+def parking_note(listing):
+    """A short, explicit callout for whether parking is included in the list
+    price -- this is a frequent point of buyer confusion, so it's worth
+    surfacing plainly rather than leaving it buried in the raw MLS fields."""
+    incl = (listing.parking_incl_in_price or "").strip().lower()
+    if incl == "no":
+        return "Not included in price"
+    if incl == "yes":
+        return "Included in price"
+    return ""
+
+
+def render_flyer(
+    listing,
+    output_path,
+    agent_phone="",
+    agent_email="brian@justinlucasgroup.com",
+    agent_name="Brian Elmore",
+):
     env = Environment(loader=FileSystemLoader(os.path.join(BASE_DIR, "templates")))
     template = env.get_template("flyer.html")
 
@@ -83,6 +111,10 @@ def render_flyer(listing, output_path, agent_phone="", agent_email="brian@justin
         friendly_type=friendly_property_type(listing),
         agent_phone=agent_phone,
         agent_email=agent_email,
+        agent_name=agent_name or "Brian Elmore",
+        sqft_display=listing.approx_sf or "TBD",
+        lot_size_display=lot_size_display(listing),
+        parking_note=parking_note(listing),
         prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
     )
 

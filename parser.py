@@ -108,6 +108,8 @@ class Listing:
     parking_type: str = ""
     parking_spaces: str = ""
     garage_details: str = ""
+    parking_incl_in_price: str = ""
+    lot_size: str = ""
 
     assessment_amount: str = ""
     assessment_frequency: str = ""
@@ -218,6 +220,14 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.rooms_total = _grab(page1_text, "Rooms", ["Bathrooms"])
     listing.bedrooms = _grab(page1_text, "Bedrooms", ["Master Bath"])
 
+    # "Dimensions" is MRED's lot-size field. For most condos it just says
+    # COMMON (shared lot), but rowhome-style/low-rise condos and any
+    # detached listing can carry real lot dimensions here, which buyers do
+    # care about.
+    m = re.search(r"Dimensions:(.*?)Ownership:", full_text, re.S)
+    if m:
+        listing.lot_size = m.group(1).strip()
+
     m = re.search(r"Bathrooms(?:\s*\(Full/Half\))?:?\s*(\d+)\s*/\s*(\d+)", page1_text)
     if m:
         listing.bathrooms_full, listing.bathrooms_half = m.group(1), m.group(2)
@@ -235,6 +245,14 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     if m:
         listing.parking_spaces = m.group(1)
     listing.garage_details = _grab(full_text, "Garage Details", ["Parking Ownership", "\n"])
+
+    # "Parking Incl. In Price" -- distinct from (and not to be confused with)
+    # "SP Incl. Parking", which is a sold-price field for closed listings.
+    # Buyers regularly get tripped up by parking being available but sold
+    # separately, so this needs to be called out explicitly.
+    m = re.search(r"(?<!SP )Parking Incl\.(Yes|No)", page1_text)
+    if m:
+        listing.parking_incl_in_price = m.group(1)
 
     # --- 4-column block: School Data / Assessments / Tax / Pet Info --------------
     # This section is laid out as 4 side-by-side columns in the source PDF; a

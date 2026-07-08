@@ -1,0 +1,6 @@
+flask
+gunicorn
+pdfplumber
+pymupdf
+weasyprint
+jinja2

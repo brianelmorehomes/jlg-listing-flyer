@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: jlg-listing-flyer
+    env: docker
+    plan: free
+    envVars:
+      - key: AGENT_PHONE
+        sync: false
+      - key: AGENT_EMAIL
+        sync: false

@@ -78,6 +78,31 @@ def parking_note(listing):
     return ""
 
 
+def building_details_display(listing):
+    """Building-level facts (unit count, stories, which floor this unit is
+    on) matter most for condos/co-ops so buyers know the scale of the
+    building and where in it this particular unit sits."""
+    parts = []
+    if listing.total_units:
+        parts.append(f"{listing.total_units} Units")
+    if listing.total_stories:
+        parts.append(f"{listing.total_stories} Stories")
+    if listing.unit_floor_level:
+        parts.append(f"Unit on Floor {listing.unit_floor_level}")
+    return " · ".join(parts)
+
+
+def pets_display(listing):
+    """Pet policy plus, when the MLS sheet specifies one, the max pet
+    weight -- an easy detail to bury but one pet-owning buyers care about."""
+    base = (listing.pets_allowed or "").strip()
+    if not base:
+        return ""
+    if listing.max_pet_weight:
+        return f"{base} (max {listing.max_pet_weight} lbs)"
+    return base
+
+
 def render_flyer(
     listing,
     output_path,
@@ -115,6 +140,8 @@ def render_flyer(
         sqft_display=listing.approx_sf or "TBD",
         lot_size_display=lot_size_display(listing),
         parking_note=parking_note(listing),
+        building_details=building_details_display(listing),
+        pets_display=pets_display(listing),
         prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
     )
 

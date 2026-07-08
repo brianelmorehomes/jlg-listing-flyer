@@ -111,6 +111,10 @@ class Listing:
     parking_incl_in_price: str = ""
     lot_size: str = ""
 
+    total_units: str = ""
+    total_stories: str = ""
+    unit_floor_level: str = ""
+
     assessment_amount: str = ""
     assessment_frequency: str = ""
     assessment_includes: str = ""
@@ -124,6 +128,7 @@ class Listing:
     high_school: str = ""
 
     pets_allowed: str = ""
+    max_pet_weight: str = ""
 
     remarks: str = ""
 
@@ -228,6 +233,18 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     if m:
         listing.lot_size = m.group(1).strip()
 
+    # Building-level facts -- especially relevant for condos/co-ops so buyers
+    # know building size and where in it this unit sits.
+    m = re.search(r"Total Units:(\d+)", page1_text)
+    if m:
+        listing.total_units = m.group(1)
+    m = re.search(r"#\s*Stories:(\d+)", page1_text)
+    if m:
+        listing.total_stories = m.group(1)
+    m = re.search(r"Unit Floor Lvl\.:(\d+)", page1_text)
+    if m:
+        listing.unit_floor_level = m.group(1)
+
     m = re.search(r"Bathrooms(?:\s*\(Full/Half\))?:?\s*(\d+)\s*/\s*(\d+)", page1_text)
     if m:
         listing.bathrooms_full, listing.bathrooms_half = m.group(1), m.group(2)
@@ -289,6 +306,9 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.high_school = _grab(school_col, "High School", ["\n"])
 
     listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "$"])
+    m = re.search(r"Max Pet Weight:(\d+)", page1_text)
+    if m:
+        listing.max_pet_weight = m.group(1)
 
     listing.assessment_includes = _grab(full_text, "Asmt Incl", ["HERS Index Score", "\n"])
 

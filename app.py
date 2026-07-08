@@ -22,7 +22,7 @@ from datetime import datetime
 
 from flask import Flask, request, jsonify, render_template_string, send_file
 
-from parser import parse_listing_pdf
+from parser import parse_listing_pdfs
 from render import render_flyer
 
 app = Flask(__name__)
@@ -256,45 +256,59 @@ def convert():
 
     for f in files:
         source_name = f.filename or "listing.pdf"
-        tmp_path = None
         try:
             data = f.read()
-            listing = parse_listing_pdf(data, source_name)
-            base_name = listing.file_safe_name or "listing"
-            out_name = f"{base_name}.pdf"
-            n = 1
-            while out_name in used_names:
-                n += 1
-                out_name = f"{base_name}_{n}.pdf"
-            used_names.add(out_name)
-
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                tmp_path = tmp.name
-            render_flyer(
-                listing,
-                tmp_path,
-                agent_phone=agent_phone,
-                agent_email=agent_email,
-                agent_name=agent_name,
-                print_safe_logo=print_safe_logo,
-            )
-
-            with open(tmp_path, "rb") as fh:
-                pdf_bytes = fh.read()
-
-            results.append({
-                "ok": True,
-                "source": source_name,
-                "address": listing.full_address or "(address not found)",
-                "filename": out_name,
-                "data_b64": base64.b64encode(pdf_bytes).decode("ascii"),
-            })
+            # A single uploaded PDF can be a batch export holding several
+            # listings back-to-back (MRED's "Full Report" for a whole
+            # search result set) -- parse_listing_pdfs splits that apart
+            # and returns one Listing per property, or just the one
+            # Listing for an ordinary single-listing file, so this always
+            # produces one flyer per property found rather than only ever
+            # converting the first listing in a multi-listing file.
+            listings = parse_listing_pdfs(data, source_name)
         except Exception as e:
             traceback.print_exc()
             results.append({"ok": False, "source": source_name, "error": str(e)})
-        finally:
-            if tmp_path and os.path.exists(tmp_path):
-                os.unlink(tmp_path)
+            continue
+
+        for listing in listings:
+            tmp_path = None
+            try:
+                base_name = listing.file_safe_name or "listing"
+                out_name = f"{base_name}.pdf"
+                n = 1
+                while out_name in used_names:
+                    n += 1
+                    out_name = f"{base_name}_{n}.pdf"
+                used_names.add(out_name)
+
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+                    tmp_path = tmp.name
+                render_flyer(
+                    listing,
+                    tmp_path,
+                    agent_phone=agent_phone,
+                    agent_email=agent_email,
+                    agent_name=agent_name,
+                    print_safe_logo=print_safe_logo,
+                )
+
+                with open(tmp_path, "rb") as fh:
+                    pdf_bytes = fh.read()
+
+                results.append({
+                    "ok": True,
+                    "source": source_name if len(listings) == 1 else f"{source_name} — {listing.full_address or 'listing'}",
+                    "address": listing.full_address or "(address not found)",
+                    "filename": out_name,
+                    "data_b64": base64.b64encode(pdf_bytes).decode("ascii"),
+                })
+            except Exception as e:
+                traceback.print_exc()
+                results.append({"ok": False, "source": source_name, "error": str(e)})
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
     return jsonify({"results": results})
 

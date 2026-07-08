@@ -343,15 +343,31 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # page 2 instead of page 1 -- so anchor words are searched across every
     # page rather than assuming a fixed page index.
     pages_words = []
+    pages_heights = []
     page_width = 612
     left_margin = 14
     try:
         with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
             pages_words = [p.extract_words() for p in pdf.pages]
+            pages_heights = [p.height for p in pdf.pages]
             if pdf.pages:
                 page_width = pdf.pages[0].width
     except Exception:
         pass
+
+    def _text_spanning_pages(start_pi, start_top, end_pi, end_top, x_min, x_max):
+        """Like _column_text, but for a block whose bottom boundary lands on
+        a later page than its top boundary -- a longer listing (bigger
+        remarks/room table) can push the trailing anchor word that would
+        normally close out a section onto the next page. Reconstructs the
+        column text as if the pages were stitched into one tall page."""
+        if start_pi == end_pi:
+            return _column_text(pages_words[start_pi], x_min, x_max, start_top, end_top)
+        parts = [_column_text(pages_words[start_pi], x_min, x_max, start_top, pages_heights[start_pi])]
+        for pi in range(start_pi + 1, end_pi):
+            parts.append(_column_text(pages_words[pi], x_min, x_max, 0, pages_heights[pi]))
+        parts.append(_column_text(pages_words[end_pi], x_min, x_max, 0, end_top))
+        return "\n".join(p for p in parts if p)
     all_words_flat = [w for words in pages_words for w in words]
     if all_words_flat:
         # The page's actual left margin varies by export source (native MRED
@@ -385,6 +401,24 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         )
         return w["top"] if w else None
 
+    def _find_after(start_pi, start_top, text, x0_max=None):
+        """Find a closing anchor word starting on `start_pi` (below
+        `start_top`) and, if not there, continuing onto later pages. A
+        content-heavy listing can push a section's closing anchor (e.g. the
+        'Broker'/'Copyright' line that ends the feature grid) onto the next
+        page instead of leaving it on the same page as the section's
+        opening anchor, which a same-page-only search would miss entirely,
+        silently blanking every field that section holds. Returns
+        (page_index, top) or None."""
+        top = _find_on(pages_words[start_pi], text, x0_max, top_min=start_top)
+        if top is not None:
+            return start_pi, top
+        for pi in range(start_pi + 1, len(pages_words)):
+            top = _find_on(pages_words[pi], text, x0_max)
+            if top is not None:
+                return pi, top
+        return None
+
     # Detached/fee-simple listings don't carry a Pet Info column (no HOA
     # pet rules), so MRED swaps it for a "Miscellaneous" column instead --
     # that word only ever appears in that layout, making it a clean
@@ -416,19 +450,57 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         listing.tax_exemptions = _grab(full_text, "Tax Exmps", ["Appx SF", "Main +", "\n"])
         listing.mult_pins = _grab(full_text, "Mult PINs", ["Habitable", "\n"])
     else:
-        # Condo/attached layout: School Data / Assessments / Tax / Pet Info
-        # all sit in one shared 4-column row, so a plain linear read jumbles
-        # them together -- crop each column separately by its known x-range.
-        header_hit = _find("School", margin_cutoff)
-        footer_hit = _find("Square", margin_cutoff)
-        if header_hit and footer_hit and header_hit[0] == footer_hit[0]:
-            _, words, header_top, _ = header_hit
-            _, _, footer_top, _ = footer_hit
-            top, bottom = header_top - 2, footer_top - 2
-            school_col = _column_text(words, 0, 165, top, bottom)
-            assess_col = _column_text(words, 165, 295, top, bottom)
-            tax_col = _column_text(words, 295, 450, top, bottom)
-            pet_col = _column_text(words, 450, page_width, top, bottom)
+        # Condo/attached layout: a shared Assessments/Tax/Pet Info row is
+        # always present, but MRED export flavors differ on where "School
+        # Data" sits relative to it -- sometimes it's the same row's first
+        # column (values jumbled together, needs x-position slicing),
+        # sometimes it's its own standalone block above/beside that row
+        # (each school field already lands cleanly on its own text line).
+        # Detect which by checking whether "School" and "Assessments" land
+        # on the same visual row, rather than assuming one or the other.
+        #
+        # Column boundaries are derived from where "Assessments"/"Tax"/
+        # "Pet" actually sit on *this* page (split at the midpoint between
+        # each pair) instead of fixed pixel positions -- the whole block's
+        # horizontal position varies enough between export flavors (seen
+        # starting anywhere from x=14 to x=245) that a hardcoded x-range
+        # silently empties every field in this block on a layout it wasn't
+        # tuned against.
+        header_hit = _find("School")
+        assess_hit = _find("Assessments")
+        same_row = bool(
+            header_hit and assess_hit and header_hit[0] == assess_hit[0]
+            and abs(header_hit[2] - assess_hit[2]) < 4
+        )
+
+        if assess_hit:
+            ai, words, assess_top, assess_x0 = assess_hit
+            row = [w for w in words if abs(w["top"] - assess_top) < 4]
+            tax_w = next((w for w in row if w["text"] == "Tax"), None)
+            pet_w = next((w for w in row if w["text"].startswith("Pet")), None)
+            tax_x0 = tax_w["x0"] if tax_w else assess_x0 + 150
+            pet_x0 = pet_w["x0"] if pet_w else tax_x0 + 110
+            col2_end = (assess_x0 + tax_x0) / 2
+            col3_end = (tax_x0 + pet_x0) / 2
+
+            footer_hit = _find_on(words, "Square", top_min=assess_top) or _find_on(words, "Room", top_min=assess_top)
+            top, bottom = assess_top - 2, (footer_hit - 2 if footer_hit else assess_top + 170)
+
+            if same_row:
+                header_x0 = header_hit[3]
+                col1_end = (header_x0 + assess_x0) / 2
+                school_col = _column_text(words, 0, col1_end, top, bottom)
+                assess_col = _column_text(words, col1_end, col2_end, top, bottom)
+            else:
+                # School Data is its own clean single-column block -- safe
+                # to pull directly off the full linear text instead.
+                listing.elementary = _grab(full_text, "Elementary", ["\n"])
+                listing.junior_high = _grab(full_text, "Junior High", ["\n"])
+                listing.high_school = _grab(full_text, "High School", ["\n"])
+                assess_col = _column_text(words, 0, col2_end, top, bottom)
+
+            tax_col = _column_text(words, col2_end, col3_end, top, bottom)
+            pet_col = _column_text(words, col3_end, page_width, top, bottom)
 
         listing.assessment_amount = money("$" + _first_num(_grab(assess_col, "Amount", ["\n"])))
         listing.assessment_frequency = _grab(assess_col, "Frequency", ["\n"])
@@ -443,11 +515,16 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         # column text, which would truncate at the wrap.
         tax_col_flat = re.sub(r"\s*\n\s*", " ", tax_col)
         listing.mult_pins = _grab(tax_col_flat, "Mult PINs", ["Tax Year", "$"])
-        listing.tax_exemptions = _grab(tax_col_flat, "Tax Exmps", ["Coop Tax Deduction", "$"])
+        # Some export flavors label the next field "Coop Tax Deduction:",
+        # others just "Tax Deduction:" -- both need to be recognized as the
+        # stop boundary or the grab runs on and swallows both trailing
+        # fields as if they were part of the exemption value.
+        listing.tax_exemptions = _grab(tax_col_flat, "Tax Exmps", ["Coop Tax Deduction", "Tax Deduction:", "$"])
 
-        listing.elementary = _grab(school_col, "Elementary", ["\n"])
-        listing.junior_high = _grab(school_col, "Junior High", ["\n"])
-        listing.high_school = _grab(school_col, "High School", ["\n"])
+        if same_row:
+            listing.elementary = _grab(school_col, "Elementary", ["\n"])
+            listing.junior_high = _grab(school_col, "Junior High", ["\n"])
+            listing.high_school = _grab(school_col, "High School", ["\n"])
 
         # Stop at "Pet Weight:" (the field label, with its colon) as well as
         # "Max Pet Weight" -- on some sheets the word "Max" lands a hair's-
@@ -458,6 +535,12 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         # the legit pet-policy phrase "Pet Weight Limitation" (no colon)
         # that can appear earlier in this same value.
         listing.pets_allowed = _grab(re.sub(r"\s*\n\s*", " ", pet_col), "Pets Allowed", ["Max Pet Weight", "Pet Weight:", "$"])
+        # A stray "/" (the tail of the neighboring tax column's "PIN: ... /"
+        # multi-PIN separator) sits close enough to the pet column boundary
+        # that it sometimes gets bucketed in with this value -- it never
+        # carries any real information for this field, so strip it out
+        # rather than let it show up mid-value on the flyer.
+        listing.pets_allowed = re.sub(r"\s*/\s*", " ", listing.pets_allowed).strip()
 
     m = re.search(r"Max Pet Weight:(\d+)", page1_text)
     if m:
@@ -488,30 +571,34 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             # the fuller "Agent" report exports); fall back to the standard
             # MRED copyright disclaimer line, which every export flavor
             # seems to carry, for the shorter "Customer"-style exports that
-            # omit broker remarks entirely. Both are looked up on the same
-            # page as the grid itself, not just the first page they appear
-            # on anywhere in the document (the copyright line repeats on
-            # every page).
-            bottom_top = _find_on(words, "Broker", margin_cutoff) or _find_on(words, "Copyright", margin_cutoff)
-            if bottom_top is not None:
+            # omit broker remarks entirely. A content-heavy listing (long
+            # remarks, big room table) can push this closing anchor onto
+            # the page *after* the grid itself, so the search continues
+            # forward across pages rather than assuming it's always on the
+            # grid's own page -- a same-page-only search would come back
+            # empty and silently blank every field in this grid.
+            bottom_hit = _find_after(gi, grid_top, "Broker", margin_cutoff) or _find_after(gi, grid_top, "Copyright", margin_cutoff)
+            if bottom_hit is not None:
+                bi, bottom_top = bottom_hit
                 top, bottom = grid_top - 2, bottom_top - 2
                 # Flatten to single-line-per-column text: every field we pull
                 # out of this grid is a short label:value pair, and MRED
                 # wraps long values (e.g. "Garage Door Opener(s), Heated,
                 # Tandem") onto a second line within the same cell, so
                 # newlines here are just wrapping, not meaningful row breaks.
-                feat_col1 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 0, 195, top, bottom)))
-                feat_col2 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 195, 395, top, bottom)))
-                feat_col3 = _degarble(re.sub(r"\s*\n\s*", " ", _column_text(words, 395, page_width, top, bottom)))
+                feat_col1 = _degarble(re.sub(r"\s*\n\s*", " ", _text_spanning_pages(gi, top, bi, bottom, 0, 195)))
+                feat_col2 = _degarble(re.sub(r"\s*\n\s*", " ", _text_spanning_pages(gi, top, bi, bottom, 195, 395)))
+                feat_col3 = _degarble(re.sub(r"\s*\n\s*", " ", _text_spanning_pages(gi, top, bi, bottom, 395, page_width)))
 
         room_hdr_hit = _find("Room", margin_cutoff)
         if room_hdr_hit:
             ri, words, room_hdr_top, _ = room_hdr_hit
-            interior_top = _find_on(words, "Interior", top_min=room_hdr_top)
-            if interior_top is not None:
+            interior_hit = _find_after(ri, room_hdr_top, "Interior")
+            if interior_hit is not None:
+                ii, interior_top = interior_hit
                 top, bottom = room_hdr_top - 2, interior_top - 2
-                rooms_left = _column_text(words, 0, 306, top, bottom)
-                rooms_right = _column_text(words, 306, page_width, top, bottom)
+                rooms_left = _text_spanning_pages(ri, top, ii, bottom, 0, 306)
+                rooms_right = _text_spanning_pages(ri, top, ii, bottom, 306, page_width)
     except Exception:
         pass
 
@@ -626,3 +713,70 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         pass
 
     return listing
+
+
+# ---------------------------------------------------------------------------
+# Multi-listing batch export support
+# ---------------------------------------------------------------------------
+# MRED lets an agent export a "Full Report" for a whole search result set as
+# one PDF -- each listing's own 2-page (or longer, for content-heavy
+# listings) sheet is just concatenated back-to-back into a single file.
+# Everything above this point assumes the file it's handed is exactly one
+# listing; parse_listing_pdfs() below detects and splits a batch export into
+# its individual listings first, then runs the normal single-listing parser
+# on each one.
+
+_LISTING_START_RE = re.compile(r"[A-Za-z][A-Za-z ]*?\s*MLS #:\s*\d+\s*List Price:")
+
+
+def _detect_listing_start_pages(file_bytes: bytes):
+    """Return the 0-based page indices where a new listing's cover page
+    begins. Each listing's real first page opens with its property type
+    immediately followed by 'MLS #:<number> List Price:' -- a signature
+    that's reliably absent from every other page (continuation pages,
+    where 'MLS #:' also appears, are followed by 'Prepared By:' instead,
+    as part of a running header/footer notice, not 'List Price:')."""
+    starts = []
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for i, page in enumerate(pdf.pages):
+            text = (page.extract_text() or "")[:400]
+            if _LISTING_START_RE.search(text):
+                starts.append(i)
+    return starts
+
+
+def split_multi_listing_pdf(file_bytes: bytes):
+    """Split a (possibly multi-listing) source PDF into one PDF-bytes blob
+    per listing, based on the page ranges between detected listing-start
+    pages. A normal single-listing file just yields one range covering the
+    whole document, so this is safe to always run."""
+    starts = _detect_listing_start_pages(file_bytes)
+    src = fitz.open(stream=file_bytes, filetype="pdf")
+    try:
+        if not starts or starts[0] != 0:
+            # Didn't find the expected header signature (an unfamiliar
+            # export format) -- fall back to treating the whole file as
+            # one listing rather than dropping content.
+            return [file_bytes]
+        ranges = []
+        for idx, start in enumerate(starts):
+            end = starts[idx + 1] if idx + 1 < len(starts) else src.page_count
+            ranges.append((start, end))
+
+        blobs = []
+        for start, end in ranges:
+            sub = fitz.open()
+            sub.insert_pdf(src, from_page=start, to_page=end - 1)
+            blobs.append(sub.tobytes())
+            sub.close()
+        return blobs
+    finally:
+        src.close()
+
+
+def parse_listing_pdfs(file_bytes: bytes, source_filename: str = ""):
+    """Multi-listing-aware entry point: splits a batch export into its
+    individual listings (a no-op split for an ordinary single-listing file)
+    and parses each one. Always returns a list, even for a single listing."""
+    blobs = split_multi_listing_pdf(file_bytes)
+    return [parse_listing_pdf(blob, source_filename) for blob in blobs]

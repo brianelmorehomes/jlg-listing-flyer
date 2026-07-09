@@ -1,36 +1,54 @@
 """
-JLG Listing Flyer Converter -- web edition (Render-ready)
-----------------------------------------------------------
-Same conversion pipeline as the desktop app, adapted to run on a host with an
-ephemeral filesystem (Render's free tier wipes local disk on every restart):
+JLG Listing Flyer Converter
+---------------------------
+A small local web app: drag in one or more raw MLS listing sheet PDFs
+(MRED or MichRIC -- auto-detected per upload, see mls_router.py), get back
+a branded, print-ready, 2-page 8.5x11 client flyer for each one.
 
-- Agent phone/email default from environment variables, not a config file.
-- Converted PDFs never touch disk on the server -- they're rendered to a
-  temp file, immediately read back into memory, and returned to the browser
-  as base64. The "download all as ZIP" endpoint is likewise stateless: the
-  browser sends back the base64 PDFs it already has, the server zips them
-  in memory and streams the result. Nothing about a listing sits on the
-  server after the request completes.
+Run with:  python3 app.py
+Then open: http://localhost:5000
 """
-import base64
 import io
+import json
 import os
-import tempfile
 import traceback
+import uuid
 import zipfile
 from datetime import datetime
 
-from flask import Flask, request, jsonify, render_template_string, send_file
+from flask import Flask, request, jsonify, send_file, render_template_string
 
-from parser import parse_listing_pdfs
+from mls_router import parse_listing_pdfs
 from render import render_flyer
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB total upload cap
 
-DEFAULT_AGENT_NAME = os.environ.get("AGENT_NAME", "Brian Elmore")
-DEFAULT_AGENT_PHONE = os.environ.get("AGENT_PHONE", "")
-DEFAULT_AGENT_EMAIL = os.environ.get("AGENT_EMAIL", "brian@justinlucasgroup.com")
+
+def load_config():
+    default = {
+        "agent_name": "Brian Elmore",
+        "agent_phone": "",
+        "agent_email": "brian@justinlucasgroup.com",
+        "print_safe_logo": False,
+    }
+    if os.path.exists(CONFIG_PATH):
+        try:
+            with open(CONFIG_PATH) as f:
+                default.update(json.load(f))
+        except Exception:
+            pass
+    return default
+
+
+def save_config(cfg):
+    with open(CONFIG_PATH, "w") as f:
+        json.dump(cfg, f, indent=2)
 
 
 PAGE = """
@@ -44,6 +62,7 @@ PAGE = """
   .wrap { max-width: 760px; margin: 0 auto; padding: 36px 24px 80px; }
   header { display:flex; align-items:center; gap:14px; margin-bottom: 28px; }
   header h1 { font-size: 19px; margin:0; color:#032b42; }
+  header .sub { font-size: 12.5px; color:#666; margin-top:2px; }
   .card { background:#fff; border-radius:8px; padding:24px; margin-bottom:20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
   #dropzone {
     border: 2px dashed #032b42; border-radius:8px; padding: 40px 20px; text-align:center;
@@ -58,6 +77,11 @@ PAGE = """
   .settings-row input[type=text] {
     padding:8px 10px; border:1px solid #ccc; border-radius:5px; font-size:13.5px; width:220px;
   }
+  button.primary {
+    background:#032b42; color:#fff; border:none; padding:10px 18px; border-radius:5px;
+    font-size:13.5px; cursor:pointer; margin-top:14px;
+  }
+  button.primary:hover { background:#04405f; }
   #results { margin-top: 10px; }
   .result-row {
     display:flex; justify-content:space-between; align-items:center;
@@ -68,7 +92,8 @@ PAGE = """
   .result-row a { color:#032b42; font-weight:600; text-decoration:none; }
   .result-row a:hover { text-decoration:underline; }
   #status { font-size:13px; color:#666; margin-top:10px; }
-  .zip-link { margin-top: 14px; display:inline-block; cursor:pointer; color:#032b42; font-weight:600; }
+  .zip-link { margin-top: 14px; display:inline-block; }
+  .spinner { display:none; }
 </style>
 </head>
 <body>
@@ -76,35 +101,34 @@ PAGE = """
   <header>
     <h1>Justin Lucas Group &mdash; Listing Flyer Converter</h1>
   </header>
-  <div style="margin:-20px 0 20px;color:#666;font-size:13px;">
+  <div class="sub" style="margin:-20px 0 20px;color:#666;font-size:13px;">
     Drop in one or more raw MLS listing sheet PDFs. Get back a branded, print-ready client flyer for each one.
-    Nothing is stored on the server &mdash; files are converted and handed back directly to your browser.
   </div>
 
   <div class="card">
     <div class="settings-row">
       <div>
         <label>Prepared for / agent name (shown on flyer)</label>
-        <input type="text" id="agentName" placeholder="Brian Elmore">
+        <input type="text" id="agentName" value="{{ cfg.agent_name }}" placeholder="Brian Elmore">
       </div>
       <div>
         <label>Phone (shown on flyer footer)</label>
-        <input type="text" id="agentPhone" placeholder="312.555.0100">
+        <input type="text" id="agentPhone" value="{{ cfg.agent_phone }}" placeholder="312.555.0100">
       </div>
       <div>
         <label>Email (shown on flyer footer)</label>
-        <input type="text" id="agentEmail">
+        <input type="text" id="agentEmail" value="{{ cfg.agent_email }}">
       </div>
     </div>
     <div style="font-size:11.5px;color:#888;margin-top:8px;">
-      Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings. Remembered on this browser only.
+      Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings.
     </div>
     <label style="display:flex;align-items:center;gap:7px;margin-top:14px;font-size:12.5px;color:#444;cursor:pointer;">
-      <input type="checkbox" id="printSafeLogo" style="margin:0;">
+      <input type="checkbox" id="printSafeLogo" {{ 'checked' if cfg.print_safe_logo else '' }} style="margin:0;">
       Print-safe logo (black &amp; white)
     </label>
     <div style="font-size:11.5px;color:#888;margin-top:3px;">
-      Some printers render our brand red as near-black no matter the print quality setting &mdash; that's a printer issue, not a PDF issue. Check this to use an all-black version of the logo instead (this is @properties' own approved black-and-white fallback, not a workaround). Remembered on this browser only.
+      Some printers render our brand red as near-black no matter the print quality setting &mdash; that's a printer issue, not a PDF issue. Check this to use an all-black version of the logo instead (this is @properties' own approved black-and-white fallback, not a workaround).
     </div>
   </div>
 
@@ -126,22 +150,6 @@ const fileInput = document.getElementById('fileInput');
 const results = document.getElementById('results');
 const statusEl = document.getElementById('status');
 const zipWrap = document.getElementById('zipWrap');
-const nameEl = document.getElementById('agentName');
-const phoneEl = document.getElementById('agentPhone');
-const emailEl = document.getElementById('agentEmail');
-const printSafeLogoEl = document.getElementById('printSafeLogo');
-
-// Remember the agent's name/phone/email in this browser (no server-side storage).
-nameEl.value = localStorage.getItem('jlg_agent_name') || '{{ default_name }}';
-phoneEl.value = localStorage.getItem('jlg_agent_phone') || '{{ default_phone }}';
-emailEl.value = localStorage.getItem('jlg_agent_email') || '{{ default_email }}';
-printSafeLogoEl.checked = localStorage.getItem('jlg_print_safe_logo') === '1';
-nameEl.addEventListener('change', () => localStorage.setItem('jlg_agent_name', nameEl.value));
-phoneEl.addEventListener('change', () => localStorage.setItem('jlg_agent_phone', phoneEl.value));
-emailEl.addEventListener('change', () => localStorage.setItem('jlg_agent_email', emailEl.value));
-printSafeLogoEl.addEventListener('change', () => localStorage.setItem('jlg_print_safe_logo', printSafeLogoEl.checked ? '1' : '0'));
-
-let lastConverted = [];
 
 dz.addEventListener('click', () => fileInput.click());
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
@@ -153,25 +161,17 @@ dz.addEventListener('drop', e => {
 });
 fileInput.addEventListener('change', () => handleFiles(fileInput.files));
 
-function b64ToBlob(b64) {
-  const bytes = atob(b64);
-  const arr = new Uint8Array(bytes.length);
-  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-  return new Blob([arr], { type: 'application/pdf' });
-}
-
 function handleFiles(fileList) {
   if (!fileList || !fileList.length) return;
   const form = new FormData();
   for (const f of fileList) form.append('files', f);
-  form.append('agent_name', nameEl.value);
-  form.append('agent_phone', phoneEl.value);
-  form.append('agent_email', emailEl.value);
-  form.append('print_safe_logo', printSafeLogoEl.checked ? '1' : '');
+  form.append('agent_name', document.getElementById('agentName').value);
+  form.append('agent_phone', document.getElementById('agentPhone').value);
+  form.append('agent_email', document.getElementById('agentEmail').value);
+  form.append('print_safe_logo', document.getElementById('printSafeLogo').checked ? '1' : '');
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
-  lastConverted = [];
   statusEl.textContent = 'Converting ' + fileList.length + ' file(s)...';
 
   fetch('/convert', { method: 'POST', body: form })
@@ -182,45 +182,18 @@ function handleFiles(fileList) {
         const row = document.createElement('div');
         row.className = 'result-row' + (r.ok ? '' : ' error');
         if (r.ok) {
-          const blob = b64ToBlob(r.data_b64);
-          const url = URL.createObjectURL(blob);
-          lastConverted.push({ filename: r.filename, data_b64: r.data_b64 });
-          row.innerHTML = '<span>' + r.source + ' &rarr; ' + r.address + '</span>';
-          const a = document.createElement('a');
-          a.href = url;
-          a.download = r.filename;
-          a.textContent = 'Download PDF';
-          row.appendChild(a);
+          row.innerHTML = '<span>' + r.source + ' &rarr; ' + r.address + '</span>' +
+            '<a href="/download/' + encodeURIComponent(r.filename) + '">Download PDF</a>';
         } else {
           row.innerHTML = '<span>' + r.source + '</span><span>Could not parse: ' + r.error + '</span>';
         }
         results.appendChild(row);
       });
-      if (lastConverted.length > 1) {
-        const link = document.createElement('div');
-        link.className = 'zip-link';
-        link.textContent = 'Download all as ZIP';
-        link.onclick = downloadZip;
-        zipWrap.appendChild(link);
+      if (data.batch_id && data.results.filter(r => r.ok).length > 1) {
+        zipWrap.innerHTML = '<a class="zip-link" href="/download-all/' + data.batch_id + '">Download all as ZIP</a>';
       }
     })
     .catch(err => { statusEl.textContent = 'Error: ' + err; });
-}
-
-function downloadZip() {
-  fetch('/zip-all', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ files: lastConverted }),
-  })
-    .then(r => r.blob())
-    .then(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'JLG_Listing_Flyers.zip';
-      a.click();
-    });
 }
 </script>
 </body>
@@ -230,102 +203,101 @@ function downloadZip() {
 
 @app.route("/")
 def index():
-    return render_template_string(
-        PAGE,
-        default_name=DEFAULT_AGENT_NAME,
-        default_phone=DEFAULT_AGENT_PHONE,
-        default_email=DEFAULT_AGENT_EMAIL,
-    )
-
-
-@app.route("/healthz")
-def healthz():
-    return "ok"
+    return render_template_string(PAGE, cfg=load_config())
 
 
 @app.route("/convert", methods=["POST"])
 def convert():
-    agent_name = request.form.get("agent_name", "").strip() or DEFAULT_AGENT_NAME
-    agent_phone = request.form.get("agent_phone", "").strip() or DEFAULT_AGENT_PHONE
-    agent_email = request.form.get("agent_email", "").strip() or DEFAULT_AGENT_EMAIL
+    agent_name = request.form.get("agent_name", "").strip() or "Brian Elmore"
+    agent_phone = request.form.get("agent_phone", "").strip()
+    agent_email = request.form.get("agent_email", "").strip() or "brian@justinlucasgroup.com"
     print_safe_logo = bool(request.form.get("print_safe_logo", "").strip())
+    save_config({
+        "agent_name": agent_name,
+        "agent_phone": agent_phone,
+        "agent_email": agent_email,
+        "print_safe_logo": print_safe_logo,
+    })
 
     files = request.files.getlist("files")
-    results = []
-    used_names = set()
+    batch_id = uuid.uuid4().hex[:10]
+    batch_dir = os.path.join(OUTPUT_DIR, batch_id)
+    os.makedirs(batch_dir, exist_ok=True)
 
+    results = []
     for f in files:
         source_name = f.filename or "listing.pdf"
         try:
             data = f.read()
             # A single uploaded PDF can be a batch export holding several
-            # listings back-to-back (MRED's "Full Report" for a whole
-            # search result set) -- parse_listing_pdfs splits that apart
-            # and returns one Listing per property, or just the one
-            # Listing for an ordinary single-listing file, so this always
-            # produces one flyer per property found rather than only ever
-            # converting the first listing in a multi-listing file.
+            # listings back-to-back (MRED's "Full Report" for a whole search
+            # result set) -- parse_listing_pdfs splits that apart and
+            # returns one Listing per property, or just the one Listing for
+            # an ordinary single-listing file, so this always produces one
+            # flyer per property found rather than only ever converting the
+            # first listing in a multi-listing file. mls_router picks MRED
+            # vs. MichRIC per upload automatically -- see mls_router.py.
             listings = parse_listing_pdfs(data, source_name)
+            for listing in listings:
+                try:
+                    out_name = f"{listing.file_safe_name or 'listing'}.pdf"
+                    out_path = os.path.join(batch_dir, out_name)
+                    # avoid collisions within the same batch
+                    n = 1
+                    base_out_name = out_name
+                    while os.path.exists(out_path):
+                        n += 1
+                        out_name = base_out_name.replace(".pdf", f"_{n}.pdf")
+                        out_path = os.path.join(batch_dir, out_name)
+                    render_flyer(
+                        listing,
+                        out_path,
+                        agent_phone=agent_phone,
+                        agent_email=agent_email,
+                        agent_name=agent_name,
+                        print_safe_logo=print_safe_logo,
+                    )
+                    results.append({
+                        "ok": True,
+                        "source": source_name if len(listings) == 1 else f"{source_name} — {listing.full_address or 'listing'}",
+                        "address": listing.full_address or "(address not found)",
+                        "filename": f"{batch_id}/{out_name}",
+                    })
+                except Exception as e:
+                    traceback.print_exc()
+                    results.append({"ok": False, "source": source_name, "error": str(e)})
         except Exception as e:
             traceback.print_exc()
             results.append({"ok": False, "source": source_name, "error": str(e)})
-            continue
 
-        for listing in listings:
-            tmp_path = None
-            try:
-                base_name = listing.file_safe_name or "listing"
-                out_name = f"{base_name}.pdf"
-                n = 1
-                while out_name in used_names:
-                    n += 1
-                    out_name = f"{base_name}_{n}.pdf"
-                used_names.add(out_name)
-
-                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
-                    tmp_path = tmp.name
-                render_flyer(
-                    listing,
-                    tmp_path,
-                    agent_phone=agent_phone,
-                    agent_email=agent_email,
-                    agent_name=agent_name,
-                    print_safe_logo=print_safe_logo,
-                )
-
-                with open(tmp_path, "rb") as fh:
-                    pdf_bytes = fh.read()
-
-                results.append({
-                    "ok": True,
-                    "source": source_name if len(listings) == 1 else f"{source_name} — {listing.full_address or 'listing'}",
-                    "address": listing.full_address or "(address not found)",
-                    "filename": out_name,
-                    "data_b64": base64.b64encode(pdf_bytes).decode("ascii"),
-                })
-            except Exception as e:
-                traceback.print_exc()
-                results.append({"ok": False, "source": source_name, "error": str(e)})
-            finally:
-                if tmp_path and os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-
-    return jsonify({"results": results})
+    return jsonify({"results": results, "batch_id": batch_id})
 
 
-@app.route("/zip-all", methods=["POST"])
-def zip_all():
-    payload = request.get_json(force=True)
-    files = payload.get("files", [])
+@app.route("/download/<path:filename>")
+def download(filename):
+    full_path = os.path.join(OUTPUT_DIR, filename)
+    if not os.path.abspath(full_path).startswith(os.path.abspath(OUTPUT_DIR)):
+        return "Invalid path", 400
+    if not os.path.exists(full_path):
+        return "Not found", 404
+    return send_file(full_path, as_attachment=True)
+
+
+@app.route("/download-all/<batch_id>")
+def download_all(batch_id):
+    batch_dir = os.path.join(OUTPUT_DIR, batch_id)
+    if not os.path.isdir(batch_dir):
+        return "Not found", 404
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in files:
-            zf.writestr(f["filename"], base64.b64decode(f["data_b64"]))
+        for fname in os.listdir(batch_dir):
+            zf.write(os.path.join(batch_dir, fname), arcname=fname)
     buf.seek(0)
     zip_name = f"JLG_Listing_Flyers_{datetime.now().strftime('%Y%m%d_%H%M')}.zip"
     return send_file(buf, as_attachment=True, download_name=zip_name, mimetype="application/zip")
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    print("\n  JLG Listing Flyer Converter is running.")
+    print("  Open this in your browser:  http://localhost:5000\n")
+    app.run(host="127.0.0.1", port=5000, debug=False)

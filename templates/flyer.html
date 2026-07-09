@@ -479,9 +479,13 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     </div>
     <div class="card">
       <div class="c-title">Schools</div>
+      {% if l.elementary or l.junior_high or l.high_school %}
       {% if l.elementary %}<div class="c-line">Elem: {{ l.elementary }}</div>{% endif %}
       {% if l.junior_high %}<div class="c-line">Jr High: {{ l.junior_high }}</div>{% endif %}
       {% if l.high_school %}<div class="c-line">High: {{ l.high_school }}</div>{% endif %}
+      {% elif l.school_district %}
+      <div class="c-line">District: {{ l.school_district }}</div>
+      {% endif %}
     </div>
     {% if pets_display or is_condo_like %}
     <div class="card">

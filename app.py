@@ -82,6 +82,7 @@ PAGE = """
     font-size:13.5px; cursor:pointer; margin-top:14px;
   }
   button.primary:hover { background:#04405f; }
+  button.primary:disabled { background:#b9c2c8; cursor:not-allowed; }
   #results { margin-top: 10px; }
   .result-row {
     display:flex; justify-content:space-between; align-items:center;
@@ -94,6 +95,14 @@ PAGE = """
   #status { font-size:13px; color:#666; margin-top:10px; }
   .zip-link { margin-top: 14px; display:inline-block; }
   .spinner { display:none; }
+  #stagedList { margin-top:14px; }
+  .staged-row {
+    display:flex; justify-content:space-between; align-items:center;
+    padding:7px 0; border-bottom:1px solid #eee; font-size:13px; color:#333;
+  }
+  .staged-row:last-child { border-bottom:none; }
+  .staged-row .remove { color:#780000; cursor:pointer; font-size:12px; margin-left:10px; }
+  .staged-row .remove:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
@@ -141,6 +150,11 @@ PAGE = """
     <div style="font-size:11.5px;color:#888;margin-top:8px;">
       MichRIC (Michigan) listings: export the <strong>NEW MichRIC Full Detail Report</strong> format &mdash; the one with a "Property Features" grid (Exterior / Interior / Construction-Utilities columns) and a "Tax and Legal" section. The older single-column report layout isn't supported and will come back mostly blank.
     </div>
+    <div id="stagedList"></div>
+    <button class="primary" id="createBtn" disabled>Create Flyers</button>
+    <div style="font-size:11.5px;color:#888;margin-top:8px;">
+      Nothing is generated until you click Create &mdash; double-check the name, phone, and email above first.
+    </div>
     <div id="status"></div>
     <div id="results"></div>
     <div id="zipWrap"></div>
@@ -153,6 +167,10 @@ const fileInput = document.getElementById('fileInput');
 const results = document.getElementById('results');
 const statusEl = document.getElementById('status');
 const zipWrap = document.getElementById('zipWrap');
+const stagedListEl = document.getElementById('stagedList');
+const createBtn = document.getElementById('createBtn');
+
+let stagedFiles = [];
 
 dz.addEventListener('click', () => fileInput.click());
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
@@ -160,14 +178,42 @@ dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
 dz.addEventListener('drop', e => {
   e.preventDefault();
   dz.classList.remove('drag');
-  handleFiles(e.dataTransfer.files);
+  addFiles(e.dataTransfer.files);
 });
-fileInput.addEventListener('change', () => handleFiles(fileInput.files));
+fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+createBtn.addEventListener('click', () => convertStagedFiles());
 
-function handleFiles(fileList) {
+function addFiles(fileList) {
   if (!fileList || !fileList.length) return;
+  for (const f of fileList) {
+    if (!stagedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
+      stagedFiles.push(f);
+    }
+  }
+  renderStagedList();
+}
+
+function removeFile(idx) {
+  stagedFiles.splice(idx, 1);
+  renderStagedList();
+}
+
+function renderStagedList() {
+  stagedListEl.innerHTML = '';
+  stagedFiles.forEach((f, idx) => {
+    const row = document.createElement('div');
+    row.className = 'staged-row';
+    row.innerHTML = '<span>' + f.name + '</span><span class="remove">Remove</span>';
+    row.querySelector('.remove').addEventListener('click', () => removeFile(idx));
+    stagedListEl.appendChild(row);
+  });
+  createBtn.disabled = stagedFiles.length === 0;
+}
+
+function convertStagedFiles() {
+  if (!stagedFiles.length) return;
   const form = new FormData();
-  for (const f of fileList) form.append('files', f);
+  for (const f of stagedFiles) form.append('files', f);
   form.append('agent_name', document.getElementById('agentName').value);
   form.append('agent_phone', document.getElementById('agentPhone').value);
   form.append('agent_email', document.getElementById('agentEmail').value);
@@ -175,7 +221,8 @@ function handleFiles(fileList) {
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
-  statusEl.textContent = 'Converting ' + fileList.length + ' file(s)...';
+  createBtn.disabled = true;
+  statusEl.textContent = 'Converting ' + stagedFiles.length + ' file(s)...';
 
   fetch('/convert', { method: 'POST', body: form })
     .then(r => r.json())
@@ -195,8 +242,13 @@ function handleFiles(fileList) {
       if (data.batch_id && data.results.filter(r => r.ok).length > 1) {
         zipWrap.innerHTML = '<a class="zip-link" href="/download-all/' + data.batch_id + '">Download all as ZIP</a>';
       }
+      stagedFiles = [];
+      renderStagedList();
     })
-    .catch(err => { statusEl.textContent = 'Error: ' + err; });
+    .catch(err => {
+      statusEl.textContent = 'Error: ' + err;
+      createBtn.disabled = stagedFiles.length === 0;
+    });
 }
 </script>
 </body>

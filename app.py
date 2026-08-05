@@ -159,6 +159,8 @@ PAGE = """
     <div id="results"></div>
     <div id="zipWrap"></div>
   </div>
+
+  <p style="text-align:center;font-size:12px;color:#888;margin-top:28px;">Built &amp; maintained by Brian Elmore &middot; 2026</p>
 </div>
 
 <script>

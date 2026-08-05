@@ -160,7 +160,7 @@ PAGE = """
     <div id="zipWrap"></div>
   </div>
 
-  <p style="text-align:center;font-size:12px;color:#888;margin-top:28px;">Built &amp; maintained by Brian Elmore &middot; 2026</p>
+  <p style="text-align:center;font-size:12px;color:#888;margin-top:28px;">&copy; 2026 Brian Elmore. All rights reserved. This tool may not be reproduced or redistributed without permission.</p>
 </div>
 
 <script>

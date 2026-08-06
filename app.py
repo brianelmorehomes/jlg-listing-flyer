@@ -113,6 +113,7 @@ PAGE = """
     padding:11px 13px; border:1.5px solid var(--border-b); border-radius: var(--r); font-size:.92rem; font-family: inherit; width:220px;
   }
   .settings-row input[type=text]:focus { outline: none; border-color: var(--blue); }
+  input[type=checkbox] { accent-color: var(--red); }
   button.primary {
     display: inline-flex; align-items: center; gap: 10px; background: var(--red); color: #fff; border: none;
     padding: 13px 24px; border-radius: var(--r); font-family: inherit; font-size:.88rem; font-weight: 700;

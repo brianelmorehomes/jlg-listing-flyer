@@ -56,65 +56,122 @@ PAGE = """
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>JLG Listing Flyer Converter</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  body { font-family: -apple-system, 'Work Sans', sans-serif; background:#f2f2f2; margin:0; padding:0; color:#222; }
-  .wrap { max-width: 760px; margin: 0 auto; padding: 36px 24px 80px; }
-  header { display:flex; align-items:center; gap:14px; margin-bottom: 28px; }
-  header h1 { font-size: 19px; margin:0; color:#032b42; }
-  header .sub { font-size: 12.5px; color:#666; margin-top:2px; }
-  .card { background:#fff; border-radius:8px; padding:24px; margin-bottom:20px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); }
+  :root {
+    --blue: #032b42;
+    --blue-dk: #021e30;
+    --blue-md: #04395a;
+    --slate: #f2f2f2;
+    --red: #780000;
+    --red-hv: #8f0000;
+    --white: #ffffff;
+    --text: #1a1a1a;
+    --muted: #6b6b6b;
+    --border: rgba(0,0,0,.08);
+    --border-b: rgba(3,43,66,.12);
+    --r: 4px;
+    --rl: 8px;
+    --d: .28s;
+    --ease: cubic-bezier(.4,0,.2,1);
+    --sh: 0 4px 20px rgba(0,0,0,.08);
+    --sh-l: 0 12px 40px rgba(0,0,0,.14);
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(--slate); color: var(--text); }
+  h1, h2 { font-family: 'DM Serif Display', serif; font-weight: 400; margin: 0; }
+
+  header.top { background: var(--blue); padding: 22px 0; }
+  .top-in { max-width: 760px; margin: 0 auto; padding: 0 24px; display: flex; align-items: center; gap: 18px; }
+  .top-in img { height: 30px; width: auto; display: block; }
+  .top-title { color: rgba(255,255,255,.55); font-size: .82rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; border-left: 1px solid rgba(255,255,255,.25); padding-left: 18px; }
+
+  .wrap { max-width: 760px; margin: 0 auto; padding: 40px 24px 100px; }
+  .hero { margin-bottom: 32px; }
+  .hero h1 { font-size: 1.7rem; color: var(--blue); }
+  .hero p { color: var(--muted); margin-top: 8px; font-size: .95rem; max-width: 560px; }
+
+  .card { background: #fff; border-radius: var(--rl); box-shadow: var(--sh); padding: 28px; margin-bottom: 24px; }
+  .step-num { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 50%; background: var(--red); color: #fff; font-size: .78rem; font-weight: 700; font-family: 'Plus Jakarta Sans'; margin-right: 10px; flex-shrink: 0; }
+  .card h2 { font-size: 1.15rem; color: var(--blue); font-family: 'Plus Jakarta Sans'; font-weight: 700; display: flex; align-items: center; margin-bottom: 16px; }
+
   #dropzone {
-    border: 2px dashed #032b42; border-radius:8px; padding: 40px 20px; text-align:center;
-    color:#032b42; cursor:pointer; transition: background 0.15s;
+    border: 2px dashed var(--border-b); border-radius: var(--rl); padding: 32px 20px; text-align:center;
+    color: var(--blue); cursor:pointer; transition: border-color var(--d) var(--ease), background var(--d) var(--ease);
   }
-  #dropzone.drag { background:#eef3f6; }
-  #dropzone p { margin: 6px 0; }
-  #dropzone .hint { font-size:12.5px; color:#888; }
+  #dropzone:hover, #dropzone.drag { border-color: var(--blue); background: var(--slate); }
+  #dropzone p { margin: 6px 0; font-size: .92rem; }
+  #dropzone .hint { font-size:.8rem; color:var(--muted); }
   input[type=file] { display:none; }
-  .settings-row { display:flex; gap:14px; flex-wrap:wrap; }
-  .settings-row label { font-size:12.5px; color:#444; display:block; margin-bottom:4px; }
+  .settings-row { display:flex; gap:16px; flex-wrap:wrap; }
+  .settings-row label { font-size:.78rem; font-weight: 700; color: var(--blue); text-transform: uppercase; letter-spacing: .03em; display:block; margin-bottom:6px; }
   .settings-row input[type=text] {
-    padding:8px 10px; border:1px solid #ccc; border-radius:5px; font-size:13.5px; width:220px;
+    padding:11px 13px; border:1.5px solid var(--border-b); border-radius: var(--r); font-size:.92rem; font-family: inherit; width:220px;
   }
+  .settings-row input[type=text]:focus { outline: none; border-color: var(--blue); }
   button.primary {
-    background:#032b42; color:#fff; border:none; padding:10px 18px; border-radius:5px;
-    font-size:13.5px; cursor:pointer; margin-top:14px;
+    display: inline-flex; align-items: center; gap: 10px; background: var(--red); color: #fff; border: none;
+    padding: 13px 24px; border-radius: var(--r); font-family: inherit; font-size:.88rem; font-weight: 700;
+    letter-spacing: .01em; cursor:pointer; margin-top:14px; transition: background var(--d) var(--ease);
   }
-  button.primary:hover { background:#04405f; }
-  button.primary:disabled { background:#b9c2c8; cursor:not-allowed; }
+  button.primary:hover { background: var(--red-hv); }
+  button.primary:disabled { background:#c9c9c9; cursor:not-allowed; }
   #results { margin-top: 10px; }
   .result-row {
     display:flex; justify-content:space-between; align-items:center;
-    padding:10px 14px; border-bottom:1px solid #eee; font-size:13.5px;
+    padding:10px 14px; border-bottom:1px solid var(--border); font-size:.88rem;
   }
   .result-row:last-child { border-bottom:none; }
-  .result-row.error { color:#780000; }
-  .result-row a { color:#032b42; font-weight:600; text-decoration:none; }
+  .result-row.error { color: var(--red); }
+  .result-row a { color: var(--blue); font-weight:700; text-decoration:none; }
   .result-row a:hover { text-decoration:underline; }
-  #status { font-size:13px; color:#666; margin-top:10px; }
-  .zip-link { margin-top: 14px; display:inline-block; }
-  .spinner { display:none; }
+  #status { font-size:.85rem; color:var(--muted); margin-top:10px; }
+  .zip-link { margin-top: 14px; display:inline-block; color: var(--blue); font-weight: 700; font-size: .85rem; }
   #stagedList { margin-top:14px; }
   .staged-row {
     display:flex; justify-content:space-between; align-items:center;
-    padding:7px 0; border-bottom:1px solid #eee; font-size:13px; color:#333;
+    padding:8px 0; border-bottom:1px solid var(--border); font-size:.85rem; color: var(--text);
   }
   .staged-row:last-child { border-bottom:none; }
-  .staged-row .remove { color:#780000; cursor:pointer; font-size:12px; margin-left:10px; }
+  .staged-row .remove { color: var(--red); cursor:pointer; font-size:.78rem; margin-left:10px; }
   .staged-row .remove:hover { text-decoration:underline; }
+
+  .build-credit { text-align: center; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); font-size: .74rem; color: var(--muted); }
+
+  @media (max-width: 640px) {
+    .top-in { padding: 0 16px; gap: 12px; }
+    .top-in img { height: 24px; }
+    .top-title { font-size: .7rem; padding-left: 12px; }
+    .wrap { padding: 24px 16px 64px; }
+    .hero h1 { font-size: 1.4rem; }
+    .card { padding: 18px; border-radius: var(--r); }
+    .settings-row { flex-direction: column; gap: 14px; }
+    .settings-row input[type=text] { width: 100%; font-size: 16px; }
+    button.primary { width: 100%; justify-content: center; }
+  }
 </style>
 </head>
 <body>
+
+<header class="top">
+  <div class="top-in">
+    <img src="/static/logo/jlg-horizontal-white.svg" alt="Justin Lucas Group">
+    <span class="top-title">Internal Tool</span>
+  </div>
+</header>
+
 <div class="wrap">
-  <header>
-    <h1>Justin Lucas Group &mdash; Listing Flyer Converter</h1>
-  </header>
-  <div class="sub" style="margin:-20px 0 20px;color:#666;font-size:13px;">
-    Drop in one or more raw MLS listing sheet PDFs. Get back a branded, print-ready client flyer for each one.
+  <div class="hero">
+    <h1>Listing Flyer Converter</h1>
+    <p>Drop in one or more raw MLS listing sheet PDFs. Get back a branded, print-ready client flyer for each one.</p>
   </div>
 
   <div class="card">
+    <h2><span class="step-num">1</span>Agent details</h2>
     <div class="settings-row">
       <div>
         <label>Prepared for / agent name (shown on flyer)</label>
@@ -129,30 +186,31 @@ PAGE = """
         <input type="text" id="agentEmail" value="{{ cfg.agent_email }}">
       </div>
     </div>
-    <div style="font-size:11.5px;color:#888;margin-top:8px;">
+    <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
       Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings.
     </div>
-    <label style="display:flex;align-items:center;gap:7px;margin-top:14px;font-size:12.5px;color:#444;cursor:pointer;">
+    <label style="display:flex;align-items:center;gap:7px;margin-top:16px;font-size:.82rem;color:var(--text);cursor:pointer;">
       <input type="checkbox" id="printSafeLogo" {{ 'checked' if cfg.print_safe_logo else '' }} style="margin:0;">
       Print-safe logo (black &amp; white)
     </label>
-    <div style="font-size:11.5px;color:#888;margin-top:3px;">
+    <div style="font-size:.78rem;color:var(--muted);margin-top:4px;">
       Some printers render our brand red as near-black no matter the print quality setting &mdash; that's a printer issue, not a PDF issue. Check this to use an all-black version of the logo instead (this is @properties' own approved black-and-white fallback, not a workaround).
     </div>
   </div>
 
   <div class="card">
+    <h2><span class="step-num">2</span>Upload listing sheets</h2>
     <div id="dropzone">
       <p><strong>Drag &amp; drop listing sheet PDF(s) here</strong></p>
       <p class="hint">or click to browse &mdash; you can select multiple files at once</p>
       <input type="file" id="fileInput" accept="application/pdf" multiple>
     </div>
-    <div style="font-size:11.5px;color:#888;margin-top:8px;">
+    <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
       MichRIC (Michigan) listings: export the <strong>NEW MichRIC Full Detail Report</strong> format &mdash; the one with a "Property Features" grid (Exterior / Interior / Construction-Utilities columns) and a "Tax and Legal" section. The older single-column report layout isn't supported and will come back mostly blank.
     </div>
     <div id="stagedList"></div>
     <button class="primary" id="createBtn" disabled>Create Flyers</button>
-    <div style="font-size:11.5px;color:#888;margin-top:8px;">
+    <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
       Nothing is generated until you click Create &mdash; double-check the name, phone, and email above first.
     </div>
     <div id="status"></div>
@@ -160,7 +218,7 @@ PAGE = """
     <div id="zipWrap"></div>
   </div>
 
-  <p style="text-align:center;font-size:12px;color:#888;margin-top:28px;">&copy; 2026 Brian Elmore. All rights reserved. This tool may not be reproduced or redistributed without permission.</p>
+  <p class="build-credit">&copy; 2026 Brian Elmore. All rights reserved. This tool may not be reproduced or redistributed without permission.</p>
 </div>
 
 <script>

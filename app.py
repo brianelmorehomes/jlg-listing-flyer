@@ -312,6 +312,7 @@ function convertStagedFiles() {
     });
 }
 </script>
+<script>(function(){try{var w=window.innerWidth||screen.width;var dev=w<768?'mobile':w<1024?'tablet':'desktop';var ref=document.referrer?'referral':'direct';var newSess=false;try{if(!sessionStorage.getItem('jlg_sess')){newSess=true;sessionStorage.setItem('jlg_sess','1');}}catch(e){}fetch('https://justinlucasgroup.com/api/track',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:'pageview',page:'/tools/listing-flyer',device:dev,ref:ref,new_session:newSess}),keepalive:true}).catch(function(){});}catch(e){}})();</script>
 </body>
 </html>
 """

@@ -280,6 +280,16 @@ class Listing:
     pets_allowed: str = ""
     max_pet_weight: str = ""
 
+    # Rental-only fields (blank/unused on a for-sale listing). See
+    # is_rental below -- render.py/flyer.html gate an entirely different
+    # "Lease Details" card row on that flag rather than the usual
+    # Assessment/Tax card row, since a renter doesn't pay property tax or
+    # HOA dues directly.
+    security_deposit: str = ""
+    lease_terms: str = ""
+    rent_includes: str = ""
+    available_date: str = ""
+
     remarks: str = ""
 
     interior_features: str = ""
@@ -329,6 +339,16 @@ class Listing:
     photo_ext: str = "jpg"
 
     source_filename: str = ""
+
+    @property
+    def is_rental(self):
+        """MRED's "Residential Rental" property type (also seen as just
+        containing "Lease" on some export flavors) -- gates the rental-
+        specific price/mo display, status labels, and the Lease Details
+        card row in render.py/flyer.html, in place of the sale-listing
+        Assessment/Tax card row."""
+        ptype = (self.property_type or "").lower()
+        return "rental" in ptype or "lease" in ptype
 
     @property
     def full_address(self):
@@ -387,14 +407,22 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         listing.mls_number = m.group(2).strip()
 
     listing.list_price = money(_grab(page1_text, "List Price", ["Orig List Price", "\n"]))
+    if not listing.list_price:
+        # Rental ("Residential Rental") sheets use "Rent Price:"/"Orig Rent
+        # Price:" in place of a sale sheet's "List Price:"/"Orig List
+        # Price:" -- same position and meaning (the headline number to
+        # lead the flyer with), just a different label.
+        listing.list_price = money(_grab(page1_text, "Rent Price", ["Orig Rent Price", "\n"]))
     listing.status = _grab(page1_text, "Status", ["List Date"])
-    listing.list_date = _grab(page1_text, "List Date", ["Orig List Price"])
+    listing.list_date = _grab(page1_text, "List Date", ["Orig List Price", "Orig Rent Price"])
     if not listing.list_date:
         # Compact/private-network exports (Status starting "PRIV") have no
         # "List Date:" at all -- "Actv. Date:" (the date this listing went
         # active on the private network) is the closest equivalent.
         listing.list_date = _grab(page1_text, "Actv. Date", ["Max List Price", "\n"])
     listing.orig_list_price = money(_grab(page1_text, "Orig List Price", ["\n"]))
+    if not listing.orig_list_price:
+        listing.orig_list_price = money(_grab(page1_text, "Orig Rent Price", ["\n"]))
 
     # "Mkt. Time (Lst./Tot.)" is MRED's days-on-market field: the first
     # number is time on the *current* listing period, the second is
@@ -421,7 +449,9 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     listing.directions = _grab(page1_text, "Directions", ["Sold by"])
 
     # --- Core facts ----------------------------------------------------------
-    listing.year_built = _grab(page1_text, "Year Built", ["Blt Before 78"])
+    # "Blt Before 78" is the sale-sheet label; rental sheets label the same
+    # field "Built B4 78" instead -- either is a valid stop boundary here.
+    listing.year_built = _grab(page1_text, "Year Built", ["Blt Before 78", "Built B4 78"])
     # Curr. Leased "No" is real, meaningful data (not a null placeholder --
     # unlike Special Assessments/Tax Exmps above), so this is captured as-is
     # rather than run through _is_nullish(); market_time_display() in
@@ -466,7 +496,18 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # COMMON (shared lot), but rowhome-style/low-rise condos and any
     # detached listing can carry real lot dimensions here, which buyers do
     # care about.
-    m = re.search(r"Dimensions:(.*?)Ownership:", full_text, re.S)
+    # Sale sheets always follow it with "Ownership:" shortly after, but
+    # rental sheets never carry an "Ownership:" field at all -- searching
+    # for it as the sole stop boundary (with DOTALL) then runs thousands
+    # of characters past the actual value, all the way to the first
+    # *substring* match inside "Garage Ownership:"/"Parking Ownership:"
+    # deep in the feature grid, swallowing the entire document in between
+    # (this was the root cause of a rental flyer rendering as a garbled
+    # 5-page mess instead of the normal 2). The value itself is always on
+    # one line, so stopping at the next newline (in addition to
+    # "Ownership:"/"County:", both of which can immediately follow on the
+    # same line depending on sheet type) is a much safer bound.
+    m = re.search(r"Dimensions:(.*?)(?:\n|Ownership:|County:)", full_text)
     if m:
         listing.lot_size = m.group(1).strip()
 
@@ -494,10 +535,13 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # Basement is a condo-irrelevant, detached/townhome-relevant field --
     # whether it's finished, and what kind (English, walkout, crawl, etc.)
     # is a significant selling point for single-family homes.
-    basement_val = _grab(page1_text, "Basement", ["Bsmnt. Bath", "\n"])
+    # Rental sheets abbreviate this field "Bmt Bath:" instead of a sale
+    # sheet's "Bsmnt. Bath:".
+    basement_val = _grab(page1_text, "Basement", ["Bsmnt. Bath", "Bmt Bath", "\n"])
     if basement_val and basement_val.lower() != "none":
         listing.basement = basement_val
-        listing.basement_bath = _grab(page1_text, "Bsmnt. Bath", ["Parking Incl", "\n"])
+        listing.basement_bath = _grab(page1_text, "Bsmnt. Bath", ["Parking Incl", "\n"]) or \
+            _grab(page1_text, "Bmt Bath", ["Appx SF", "Parking Incl", "\n"])
 
     m = re.search(r"#\s*Fireplaces:(\d+)", page1_text)
     if m and m.group(1) != "0":
@@ -523,9 +567,10 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # "SP Incl. Parking", which is a sold-price field for closed listings.
     # Buyers regularly get tripped up by parking being available but sold
     # separately, so this needs to be called out explicitly.
-    m = re.search(r"(?<!SP )Parking Incl\.(Yes|No)", page1_text)
+    # Rental sheets abbreviate this Yes/No to a bare Y/N.
+    m = re.search(r"(?<!SP )Parking Incl\.(Yes|No|Y|N)\b", page1_text)
     if m:
-        listing.parking_incl_in_price = m.group(1)
+        listing.parking_incl_in_price = {"Y": "Yes", "N": "No"}.get(m.group(1), m.group(1))
 
     # --- Multi-page word index ----------------------------------------------------
     # Different MRED export flavors put the same sections on different pages
@@ -666,7 +711,36 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             and abs(header_hit[2] - assess_hit[2]) < 4
         )
 
-        if assess_hit:
+        # Rental sheets never carry an Assessments/Tax column at all --
+        # renters don't pay property tax or HOA dues directly -- so this
+        # whole block instead shows just a 2-column "School Data / Pet
+        # Information" row. Handle that as its own case (checked before
+        # the assess_hit branch below, which would otherwise never find
+        # an "Assessments" header to key off and leave every column
+        # blank) rather than folding it into the compact/private-network
+        # fallback further down, which has no "School Data" header at all
+        # and would miss the real x-position-based Pet Information sitting
+        # right next to School Data here.
+        pet_only_hit = None if assess_hit else _find("Pet")
+        pet_only_same_row = bool(
+            header_hit and pet_only_hit and header_hit[0] == pet_only_hit[0]
+            and abs(header_hit[2] - pet_only_hit[2]) < 4
+        )
+        rental_school_pet_handled = False
+
+        if not assess_hit and header_hit and pet_only_hit and pet_only_same_row:
+            hi, words, header_top, header_x0 = header_hit
+            pet_x0 = pet_only_hit[3]
+            col_split = (header_x0 + pet_x0) / 2
+            footer_hit = _find_on(words, "Square", top_min=header_top) or _find_on(words, "Room", top_min=header_top)
+            top, bottom = header_top - 2, (footer_hit - 2 if footer_hit else header_top + 170)
+            school_col = _column_text(words, 0, col_split, top, bottom)
+            pet_col = _column_text(words, col_split, page_width, top, bottom)
+            listing.elementary = _grab(school_col, "Elementary", ["\n"])
+            listing.junior_high = _grab(school_col, "Junior High", ["\n"])
+            listing.high_school = _grab(school_col, "High School", ["\n"])
+            rental_school_pet_handled = True
+        elif assess_hit:
             ai, words, assess_top, assess_x0 = assess_hit
             row = [w for w in words if abs(w["top"] - assess_top) < 4]
             tax_w = next((w for w in row if w["text"] == "Tax"), None)
@@ -737,7 +811,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         # rather than let it show up mid-value on the flyer.
         listing.pets_allowed = re.sub(r"\s*/\s*", " ", listing.pets_allowed).strip()
 
-        if not assess_hit:
+        if not assess_hit and not rental_school_pet_handled:
             # Compact/private-network exports have no "Assessments"
             # section at all -- there's no bottom School/Assessments/Tax/
             # Pet grid to key off here, but Elementary/Junior High/High
@@ -801,6 +875,11 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             listing.max_pet_weight = str(weight)
 
     listing.assessment_includes = _grab(full_text, "Asmt Incl", ["HERS Index Score", "\n"])
+
+    # Rental-only: what a tenant pays up front -- high-signal for renters,
+    # the equivalent of "Asmt Incl" for a condo buyer, so worth surfacing
+    # the same way.
+    listing.security_deposit = _grab(page1_text, "Security Deposit", ["Remarks", "\n"])
 
     # --- Remarks (long free text) -------------------------------------------------
     # "Exterior Property Features"/"Copyright" added as terminators alongside
@@ -920,10 +999,29 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         "Green Disc", "Green Rating Source:", "Green Feats:", "Sale Terms:",
         "Possession:", "Occ Date:", "Est Occp Date:", "Management:", "Rural:",
         "Vacant:", "Addl. Sales Info.:", "Broker Owned/Interest:",
+        # Rental-sheet-only labels that live in this same feature grid.
+        "Lease Terms:", "Monthly Rent Incl:", "Available As Of:",
+        "Fees/Approvals:", "Board Approval:",
     ]
 
     def _grab_feat(text, label, primary_stops=()):
         return _grab(text, label, list(primary_stops) + FEAT_LABELS)
+
+    # Rental-only feature-grid fields. These can land in any of the 3
+    # columns depending on how MRED lays out that particular sheet, so
+    # search the columns concatenated together rather than guessing one --
+    # the label:value text within each column is already correctly
+    # isolated by the x-position split above, so joining them doesn't
+    # jumble anything, it just removes the need to know which column a
+    # given label happened to land in.
+    feat_all = " ".join(c for c in (feat_col1, feat_col2, feat_col3) if c)
+    # "Parking Fee (High/Low): /" (a blank fee range) sits next to "Lease
+    # Terms:" in this grid often enough that its "/" separator gets swept
+    # into the grab -- same cosmetic artifact as the pet-column "/" bleed
+    # elsewhere, trimmed the same way.
+    listing.lease_terms = re.sub(r"\s*/\s*$", "", _grab_feat(feat_all, "Lease Terms")).strip()
+    listing.rent_includes = _grab_feat(feat_all, "Monthly Rent Incl")
+    listing.available_date = _grab_feat(feat_all, "Available As Of")
 
     listing.interior_features = _grab(full_text, "Interior Property Features", ["Exterior Property Features"])
     # "Garage Ownership:" added as a stop -- compact/private-network
@@ -1083,7 +1181,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             line = line.strip()
             m = re.match(
                 r"(" + ROOM_NAMES + r")"
-                r"\s*([\dX]+|COMBO)?\s*(Main Level|2nd Level|3rd Level|Lower Level|Basement)?\s*(Hardwood|Carpet|Ceramic Tile|Vinyl|Marble|Wood Laminate|Luxury Vinyl|Other)?",
+                r"\s*([\dX]+|COMBO)?\s*(Main Level|2nd Level|3rd Level|Lower Level|Basement)?\s*(Hardwood|Carpet|Ceramic Tile|Porcelain Tile|Vinyl|Marble|Wood Laminate|Luxury Vinyl|Other)?",
                 line,
             )
             if not m:
@@ -1142,7 +1240,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     # every other listing in the batch, not just mis-parsing the private
     # one. Still safe against continuation-page false positives: those
     # pages' "MLS #:" is followed by "Prepared By:", never "Status:".
-_LISTING_START_RE = re.compile(r"[A-Za-z][A-Za-z ]*?\s*MLS #:\s*\d+\s*(?:List Price:|Status:)")
+_LISTING_START_RE = re.compile(r"[A-Za-z][A-Za-z ]*?\s*MLS #:\s*\d+\s*(?:List Price:|Rent Price:|Status:)")
 
 
 def _detect_listing_start_pages(file_bytes: bytes):

@@ -434,6 +434,17 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         for i in use_idx:
             page = pdf.pages[i]
             words = page.extract_words(extra_attrs=["fontname", "size"])
+            # Drop fine-print words (the compliance disclaimer paragraph
+            # renders at ~5.0pt, vs. ~7.0pt for every real label/value/
+            # description/amenities word and ~7.5-8.0pt for headers,
+            # confirmed directly on real samples -- see module docstring's
+            # "7.0pt body" convention). Without this, a section with
+            # nothing else below it on the page (Amenities in particular,
+            # which sits last before the disclaimer block on every real
+            # sample seen) has no next-header boundary to stop at and
+            # _text_section() swallows the entire multi-hundred-word
+            # disclaimer paragraph into that section's value.
+            words = [w for w in words if w.get("size", 0) >= 6.0]
             headers = _section_headers(words)
             bottom = page.height
 
@@ -527,13 +538,60 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     lot = _lot_size_from(propdetails)
     if lot:
         listing.lot_size = lot
+    # `listing.stories` (stories in the home itself, paired with Basement/
+    # Fireplaces on the facts strip) vs. `listing.total_stories` (a condo
+    # BUILDING's floor count, paired with Total Units/Unit Floor Level) is
+    # a real distinction the shared Listing model and flyer.html template
+    # already draw for classic MRED (see parser.py's own "Type
+    # Detached/Attached: 2 Stories" -> listing.stories vs. "# Stories:" ->
+    # listing.total_stories, with the latter's own comment noting it's
+    # "especially relevant for condos/co-ops"). This sheet's "Total
+    # Stories" field is the former, not the latter -- confirmed by Red Oak
+    # Dr, a single-family Ranch, populating it directly with no Total
+    # Units/Unit Floor Level fields anywhere on the sheet. Mapping it to
+    # `total_stories` was wrong: flyer.html's facts-strip-secondary picks
+    # its whole second row based on whether ANY of total_units/
+    # total_stories/unit_floor_level is set, so a populated total_stories
+    # on a non-condo listing silently swapped Basement/Fireplaces out for
+    # a Total Units/Unit Floor row that's always blank for this source.
     stories = propdetails.get("Total Stories", "")
     if stories and not _is_nullish(stories):
-        listing.total_stories = stories
+        listing.stories = stories
+    else:
+        # Property Details' own "Total Stories" comes back blank ("-") on
+        # every MRED-sourced sample seen so far -- but MRED-sourced
+        # listings put the story count in Key Details' "MLS Prop Type 2"
+        # instead, as free text like "2 Stories" (this mirrors the
+        # classic MRED sheet's own "Type Detached/Attached: 2 Stories"
+        # field, which is exactly what this fallback is patterned after).
+        # MichRIC-sourced listings do the reverse: Total Stories is
+        # populated directly (the branch above), and MLS Prop Type 2
+        # holds a property-type string instead ("Single Family
+        # Residence") that this regex simply won't match -- confirmed on
+        # real samples of both, so this fallback only ever fires when
+        # it's actually needed.
+        m = re.search(r"(\d+(?:\.\d+)?)\s*Stor", details.get("MLS Prop Type 2", ""), re.IGNORECASE)
+        if m:
+            listing.stories = m.group(1)
 
     # --- Amenities / Description / Schools -----------------------------------
     if amenities_text:
         listing.amenities = amenities_text
+        # This sheet has no dedicated Basement field -- it only ever shows
+        # up as a token inside the Amenities list, either bare
+        # ("Basement") or with a finish/size qualifier ("Full Basement"),
+        # confirmed on real samples of both -- so a substring match (not
+        # exact) is needed to catch the qualified form. Use the fuller
+        # token as the display value when there is one (matches the
+        # richer "Full"/"Finished" values basement_display() already
+        # shows for classic MRED listings); fall back to a plain "Yes"
+        # for the bare form, since that's all the sheet tells us.
+        basement_item = next(
+            (t.strip() for t in amenities_text.split(",") if "basement" in t.lower()),
+            None,
+        )
+        if basement_item:
+            listing.basement = "Yes" if basement_item.lower() == "basement" else basement_item
     if description:
         listing.remarks = description
     if schools_lines:

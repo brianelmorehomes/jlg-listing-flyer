@@ -18,13 +18,6 @@
   --granite: #404042;
   --white: #ffffff;
   --hairline: #d8dcde;
-  /* Single "muted/secondary text" grey, chosen for print reliability
-     rather than screen appearance: ~5.3:1 contrast against white, well
-     above the ~4.5:1 floor recommended once text drops under ~8pt. This
-     replaces #9a9a9c and #8b8b8d (2.8:1 and 3.4:1 contrast) -- fine on a
-     backlit screen, but exactly the values that thin out or vanish on a
-     printer running low on toner or on off-white/matte paper. */
-  --muted: #6b6b6d;
 }
 
 * { box-sizing: border-box; }
@@ -36,9 +29,9 @@
     content: "{{ l.full_address }}  \2022  Page " counter(page) " of " counter(pages);
     font-family: 'Work Sans', sans-serif;
     font-size: 6.6pt;
-    color: var(--muted);
+    color: #9a9a9c;
     padding-top: 6px;
-    border-top: 0.75pt solid #d8dcde;
+    border-top: 0.6pt solid #d8dcde;
     width: 100%;
   }
 }
@@ -100,10 +93,16 @@ h1, h2, h3 { margin: 0; padding: 0; }
   border-radius: 3px;
   background-color: var(--slate);
 }
-.status-badge {
+.photo-badges {
   position: absolute;
   top: 10px;
   left: 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+}
+.status-badge {
   background: var(--broker-blue);
   color: white;
   font-family: 'Work Sans', sans-serif;
@@ -115,6 +114,20 @@ h1, h2, h3 { margin: 0; padding: 0; }
   text-transform: uppercase;
 }
 .status-badge.private { background: var(--ruge); }
+/* Understated by design -- an open house is worth flagging on the
+   flyer, but shouldn't compete visually with the status badge above
+   it or the price below. White pill with a hairline border rather
+   than a second solid-color block. */
+.open-house-badge {
+  background: white;
+  color: var(--broker-blue);
+  border: 0.75pt solid var(--broker-blue);
+  font-family: 'Work Sans', sans-serif;
+  font-weight: 500;
+  font-size: 7.2pt;
+  padding: 3px 9px;
+  border-radius: 2px;
+}
 .private-note {
   font-size: 8.2pt;
   line-height: 1.35;
@@ -147,7 +160,7 @@ h1, h2, h3 { margin: 0; padding: 0; }
 }
 .hero-info .market-line {
   font-size: 8pt;
-  color: var(--muted);
+  color: #6b6b6d;
   margin-top: 3px;
 }
 .hero-info .price-row {
@@ -278,7 +291,7 @@ h1, h2, h3 { margin: 0; padding: 0; }
 .directions {
   margin-top: 10px;
   font-size: 8.2pt;
-  color: var(--muted);
+  color: #6b6b6d;
 }
 .directions.condensed, .directions.tight, .directions.very-tight { margin-top: 6px; font-size: 7.6pt; }
 .directions b { color: var(--granite); }
@@ -318,7 +331,7 @@ table.rooms th {
 }
 table.rooms td {
   padding: 4px 6px;
-  border-bottom: 0.75pt solid var(--hairline);
+  border-bottom: 0.6pt solid var(--hairline);
 }
 table.rooms.dense td { padding: 2.6px 6px; }
 table.rooms.very-dense td { padding: 2px 5px; }
@@ -341,32 +354,19 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   gap: 6px;
   font-size: 8.6pt;
   padding: 3.5px 6px;
-  border-bottom: 0.75pt solid var(--hairline);
+  border-bottom: 0.6pt solid var(--hairline);
 }
 .rooms-compact-item:nth-child(even) { background: #fafafa; }
 .rooms-compact-item .rn { color: var(--granite); }
 .rooms-compact-item .rl {
   flex-shrink: 0;
-  color: var(--muted);
+  color: #8b8b8d;
   font-size: 7.3pt;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .rooms-compact.dense .rooms-compact-item { font-size: 8pt; padding: 2.6px 6px; }
 .rooms-compact.very-dense .rooms-compact-item { font-size: 7.6pt; padding: 2px 5px; }
-
-/* Shown in place of the Room Dimensions table when the MLS sheet simply
-   never had a room-by-room breakdown filled in (a common, agent-side-optional
-   field -- not something this tool is choosing to leave out). Making that
-   explicit here matters: a client comparing this flyer to another agent's
-   packet for the same listing could otherwise read a missing section as the
-   listing agent hiding something, rather than a data gap on MRED's end. */
-.no-room-data {
-  font-size: 8.3pt;
-  font-style: italic;
-  color: var(--granite);
-  padding: 2px 0 4px;
-}
 
 .two-col { display: flex; gap: 22px; }
 .two-col .col { flex: 1; }
@@ -386,6 +386,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
   font-size: 8.7pt;
   color: var(--granite);
   line-height: 1.45;
+  white-space: pre-line;
 }
 .feature-group.dense .g-body { font-size: 8.2pt; line-height: 1.32; }
 .feature-group.very-dense .g-body { font-size: 7.6pt; line-height: 1.24; }
@@ -470,12 +471,9 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
 }
 .compliance .agent-line .sub { font-weight: 400; color: var(--granite); font-size: 7.6pt; }
 .compliance .legal {
-  /* Bumped from 6.4pt and lightened less than the old #8b8b8d (3.4:1
-     contrast) -- this is the MLS/Fair Housing attribution text, which
-     should stay legible regardless of printer/toner/paper. */
-  font-size: 6.8pt;
+  font-size: 6.4pt;
   line-height: 1.5;
-  color: var(--muted);
+  color: #8b8b8d;
 }
 </style>
 </head>
@@ -498,7 +496,10 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     {% if photo_path %}
     <div class="hero-photo" style="background-image: url('file://{{ photo_path }}');"></div>
     {% endif %}
-    {% if l.status %}<div class="status-badge{% if is_private %} private{% endif %}">{{ status_label }}</div>{% endif %}
+    <div class="photo-badges">
+      {% if l.status %}<div class="status-badge{% if is_private %} private{% endif %}">{{ status_label }}</div>{% endif %}
+      {% if l.open_house %}<div class="open-house-badge">Open house &middot; {{ l.open_house }}</div>{% endif %}
+    </div>
   </div>
   <div class="hero-info">
     <h1 class="serif">{{ l.street_address }}</h1>
@@ -555,15 +556,9 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     <span>MLS #{{ l.mls_number }}</span>
   </div>
 
+  {% if l.rooms %}
   <div class="section-title">Room Dimensions</div>
-  {% if not l.rooms %}
-  <!-- Room-by-room dimensions are an optional MRED field -- plenty of
-       listing agents never fill it in, especially on smaller/older homes.
-       Omitting this section entirely in that case reads, to a client
-       comparing flyers, as if it were left out on purpose; naming the data
-       gap directly avoids that impression. -->
-  <div class="no-room-data">Room-by-room dimensions were not provided in the MLS listing.</div>
-  {% elif rooms_use_compact %}
+  {% if rooms_use_compact %}
   <!-- No room in this listing has any size/flooring data (the common
        case for MichRIC sheets, which typically only carry room name +
        level) -- the 4-column table below would waste roughly half its
@@ -591,6 +586,7 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     </tr>
     {% endfor %}
   </table>
+  {% endif %}
   {% endif %}
 
   <div class="section-title">Property Features</div>

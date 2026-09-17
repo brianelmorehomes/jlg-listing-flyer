@@ -498,7 +498,12 @@ table.rooms tr:nth-child(even) td { background: #fafafa; }
     {% endif %}
     <div class="photo-badges">
       {% if l.status %}<div class="status-badge{% if is_private %} private{% endif %}">{{ status_label }}</div>{% endif %}
-      {% if l.open_house %}<div class="open-house-badge">Open house &middot; {{ l.open_house }}</div>{% endif %}
+      {# Open house badge intentionally not shown on this app's flyers --
+         these get printed in bulk and can end up handed out or sitting
+         around well after the advertised date/time, unlike a showing
+         packet (which is generated fresh per showing). Still shown on
+         jlg-showing-packet's flyer.html. The l.open_house field itself is
+         still parsed/populated here in case that changes. #}
     </div>
   </div>
   <div class="hero-info">

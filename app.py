@@ -140,6 +140,10 @@ PAGE = """
   .staged-row:last-child { border-bottom:none; }
   .staged-row .remove { color: var(--red); cursor:pointer; font-size:.78rem; margin-left:10px; }
   .staged-row .remove:hover { text-decoration:underline; }
+  .staged-row .right { display:flex; align-items:center; gap:10px; }
+  .staged-row .photo-btn { color: var(--blue); cursor:pointer; font-size:.78rem; }
+  .staged-row .photo-btn:hover { text-decoration:underline; }
+  .staged-row .photo-btn.attached { color: #0a6e2f; font-weight:700; }
 
   .build-credit { text-align: center; margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--border); font-size: .74rem; color: var(--muted); }
 
@@ -209,6 +213,9 @@ PAGE = """
     <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
       MichRIC (Michigan) listings: export the <strong>NEW MichRIC Full Detail Report</strong> format &mdash; the one with a "Property Features" grid (Exterior / Interior / Construction-Utilities columns) and a "Tax and Legal" section. The older single-column report layout isn't supported and will come back mostly blank.
     </div>
+    <div style="font-size:.78rem;color:var(--muted);margin-top:6px;">
+      Have a better photo than what's on the listing sheet (common with Home Platform exports)? Once a file is staged below, click <strong>+ Add better photo</strong> next to it to use your own instead.
+    </div>
     <div id="stagedList"></div>
     <button class="primary" id="createBtn" disabled>Create Flyers</button>
     <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
@@ -232,6 +239,12 @@ const stagedListEl = document.getElementById('stagedList');
 const createBtn = document.getElementById('createBtn');
 
 let stagedFiles = [];
+// Parallel array to stagedFiles -- stagedPhotos[i] is either null or a File
+// (an optional higher-res photo the user wants used instead of whatever
+// photo gets extracted from stagedFiles[i]). Kept index-aligned rather than
+// attached to the File objects themselves so add/remove/clear stay simple
+// array ops.
+let stagedPhotos = [];
 
 dz.addEventListener('click', () => fileInput.click());
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag'); });
@@ -249,6 +262,7 @@ function addFiles(fileList) {
   for (const f of fileList) {
     if (!stagedFiles.some(sf => sf.name === f.name && sf.size === f.size)) {
       stagedFiles.push(f);
+      stagedPhotos.push(null);
     }
   }
   renderStagedList();
@@ -256,6 +270,25 @@ function addFiles(fileList) {
 
 function removeFile(idx) {
   stagedFiles.splice(idx, 1);
+  stagedPhotos.splice(idx, 1);
+  renderStagedList();
+}
+
+function pickPhoto(idx) {
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = 'image/*';
+  inp.addEventListener('change', () => {
+    if (inp.files && inp.files[0]) {
+      stagedPhotos[idx] = inp.files[0];
+      renderStagedList();
+    }
+  });
+  inp.click();
+}
+
+function clearPhoto(idx) {
+  stagedPhotos[idx] = null;
   renderStagedList();
 }
 
@@ -264,8 +297,37 @@ function renderStagedList() {
   stagedFiles.forEach((f, idx) => {
     const row = document.createElement('div');
     row.className = 'staged-row';
-    row.innerHTML = '<span>' + f.name + '</span><span class="remove">Remove</span>';
-    row.querySelector('.remove').addEventListener('click', () => removeFile(idx));
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = f.name;
+    row.appendChild(nameSpan);
+
+    const right = document.createElement('span');
+    right.className = 'right';
+
+    const photo = stagedPhotos[idx];
+    const photoBtn = document.createElement('span');
+    photoBtn.className = 'photo-btn' + (photo ? ' attached' : '');
+    photoBtn.textContent = photo ? ('Photo: ' + photo.name) : '+ Add better photo';
+    photoBtn.title = "Use your own high-res photo instead of the one pulled from this listing sheet";
+    photoBtn.addEventListener('click', () => pickPhoto(idx));
+    right.appendChild(photoBtn);
+
+    if (photo) {
+      const clearBtn = document.createElement('span');
+      clearBtn.className = 'remove';
+      clearBtn.textContent = 'Clear photo';
+      clearBtn.addEventListener('click', () => clearPhoto(idx));
+      right.appendChild(clearBtn);
+    }
+
+    const removeBtn = document.createElement('span');
+    removeBtn.className = 'remove';
+    removeBtn.textContent = 'Remove';
+    removeBtn.addEventListener('click', () => removeFile(idx));
+    right.appendChild(removeBtn);
+
+    row.appendChild(right);
     stagedListEl.appendChild(row);
   });
   createBtn.disabled = stagedFiles.length === 0;
@@ -274,7 +336,10 @@ function renderStagedList() {
 function convertStagedFiles() {
   if (!stagedFiles.length) return;
   const form = new FormData();
-  for (const f of stagedFiles) form.append('files', f);
+  stagedFiles.forEach((f, idx) => {
+    form.append('files', f);
+    if (stagedPhotos[idx]) form.append('photo_override_' + idx, stagedPhotos[idx]);
+  });
   form.append('agent_name', document.getElementById('agentName').value);
   form.append('agent_phone', document.getElementById('agentPhone').value);
   form.append('agent_email', document.getElementById('agentEmail').value);
@@ -304,6 +369,7 @@ function convertStagedFiles() {
         zipWrap.innerHTML = '<a class="zip-link" href="/download-all/' + data.batch_id + '">Download all as ZIP</a>';
       }
       stagedFiles = [];
+      stagedPhotos = [];
       renderStagedList();
     })
     .catch(err => {
@@ -342,7 +408,7 @@ def convert():
     os.makedirs(batch_dir, exist_ok=True)
 
     results = []
-    for f in files:
+    for idx, f in enumerate(files):
         source_name = f.filename or "listing.pdf"
         try:
             data = f.read()
@@ -355,6 +421,33 @@ def convert():
             # first listing in a multi-listing file. mls_router picks MRED
             # vs. MichRIC per upload automatically -- see mls_router.py.
             listings = parse_listing_pdfs(data, source_name)
+
+            # Optional manual photo override: for Brian's own listings he
+            # typically already has the real high-res photos on hand (from
+            # the photographer, his own camera roll, etc.), so rather than
+            # relying on whatever a source sheet embedded -- Home Platform's
+            # own PDF export embeds photos at a fixed ~135px-tall thumbnail
+            # with no larger copy anywhere else in the same file, a genuine
+            # source-resolution ceiling, see DEV_NOTES.md -- the UI lets him
+            # attach a better photo per staged PDF before conversion. Keyed
+            # by upload index (photo_override_<i>) since the override is
+            # attached in the browser before parsing has happened, so there's
+            # no listing object yet to key it to directly. Only applied when
+            # that PDF produced exactly one listing -- a batch/multi-listing
+            # export (MRED's "Full Report" for a whole search result set)
+            # has no reliable way to know which of several properties a
+            # single attached photo belongs to, so the override is silently
+            # skipped rather than risk misapplying someone else's photo.
+            override_file = request.files.get(f"photo_override_{idx}")
+            if override_file and override_file.filename and len(listings) == 1:
+                override_bytes = override_file.read()
+                if override_bytes:
+                    ext = os.path.splitext(override_file.filename)[1].lstrip(".").lower() or "jpg"
+                    if ext not in ("jpg", "jpeg", "png", "webp"):
+                        ext = "jpg"
+                    listings[0].photo_bytes = override_bytes
+                    listings[0].photo_ext = ext
+
             for listing in listings:
                 try:
                     out_name = f"{listing.file_safe_name or 'listing'}.pdf"

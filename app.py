@@ -9,7 +9,6 @@ Run with:  python3 app.py
 Then open: http://localhost:5000
 """
 import io
-import json
 import os
 import traceback
 import uuid
@@ -23,32 +22,28 @@ from render import render_flyer
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB total upload cap
 
-
-def load_config():
-    default = {
-        "agent_name": "Brian Elmore",
-        "agent_phone": "",
-        "agent_email": "brian@justinlucasgroup.com",
-        "print_safe_logo": False,
-    }
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH) as f:
-                default.update(json.load(f))
-        except Exception:
-            pass
-    return default
-
-
-def save_config(cfg):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
+# Factory-default agent details, from the AGENT_NAME/AGENT_PHONE/AGENT_EMAIL
+# env vars already declared (sync: false) in render.yaml -- same convention
+# jlg-showing-packet uses. These are only ever the FIRST-visit fallback: the
+# page's own JS remembers whatever a given browser last typed into these
+# fields via localStorage (see PAGE's <script>), which is what actually
+# answers "remember this on my computer for next time." A previous version
+# of this app used a server-side config.json that got overwritten on every
+# conversion -- that persisted the LAST PERSON TO USE THE TOOL's name/phone/
+# email as the default for literally everyone else hitting this same Render
+# URL afterward (Justin converts a flyer, then Brian's next visit shows
+# Justin's info) rather than "remembered on my computer," so it's gone.
+DEFAULT_CONFIG = {
+    "agent_name": os.environ.get("AGENT_NAME", "Brian Elmore"),
+    "agent_phone": os.environ.get("AGENT_PHONE", ""),
+    "agent_email": os.environ.get("AGENT_EMAIL", "brian@justinlucasgroup.com"),
+    "print_safe_logo": False,
+}
 
 
 PAGE = """
@@ -230,6 +225,25 @@ const statusEl = document.getElementById('status');
 const zipWrap = document.getElementById('zipWrap');
 const stagedListEl = document.getElementById('stagedList');
 const createBtn = document.getElementById('createBtn');
+const nameEl = document.getElementById('agentName');
+const phoneEl = document.getElementById('agentPhone');
+const emailEl = document.getElementById('agentEmail');
+const printSafeLogoEl = document.getElementById('printSafeLogo');
+
+// Remember these on THIS browser for next time -- same jlg_* keys/pattern
+// as jlg-showing-packet, so if Brian ever consolidates these tools onto one
+// domain the memory carries over for free. Falls back to whatever the page
+// already rendered (the AGENT_NAME/PHONE/EMAIL env-var defaults) the first
+// time a given browser opens this tool.
+nameEl.value = localStorage.getItem('jlg_agent_name') || nameEl.value;
+phoneEl.value = localStorage.getItem('jlg_agent_phone') || phoneEl.value;
+emailEl.value = localStorage.getItem('jlg_agent_email') || emailEl.value;
+const storedPrintSafe = localStorage.getItem('jlg_print_safe_logo');
+if (storedPrintSafe !== null) printSafeLogoEl.checked = storedPrintSafe === '1';
+nameEl.addEventListener('change', () => localStorage.setItem('jlg_agent_name', nameEl.value));
+phoneEl.addEventListener('change', () => localStorage.setItem('jlg_agent_phone', phoneEl.value));
+emailEl.addEventListener('change', () => localStorage.setItem('jlg_agent_email', emailEl.value));
+printSafeLogoEl.addEventListener('change', () => localStorage.setItem('jlg_print_safe_logo', printSafeLogoEl.checked ? '1' : '0'));
 
 let stagedFiles = [];
 
@@ -275,10 +289,10 @@ function convertStagedFiles() {
   if (!stagedFiles.length) return;
   const form = new FormData();
   for (const f of stagedFiles) form.append('files', f);
-  form.append('agent_name', document.getElementById('agentName').value);
-  form.append('agent_phone', document.getElementById('agentPhone').value);
-  form.append('agent_email', document.getElementById('agentEmail').value);
-  form.append('print_safe_logo', document.getElementById('printSafeLogo').checked ? '1' : '');
+  form.append('agent_name', nameEl.value);
+  form.append('agent_phone', phoneEl.value);
+  form.append('agent_email', emailEl.value);
+  form.append('print_safe_logo', printSafeLogoEl.checked ? '1' : '');
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
@@ -320,7 +334,7 @@ function convertStagedFiles() {
 
 @app.route("/")
 def index():
-    return render_template_string(PAGE, cfg=load_config())
+    return render_template_string(PAGE, cfg=DEFAULT_CONFIG)
 
 
 @app.route("/convert", methods=["POST"])
@@ -329,12 +343,6 @@ def convert():
     agent_phone = request.form.get("agent_phone", "").strip()
     agent_email = request.form.get("agent_email", "").strip() or "brian@justinlucasgroup.com"
     print_safe_logo = bool(request.form.get("print_safe_logo", "").strip())
-    save_config({
-        "agent_name": agent_name,
-        "agent_phone": agent_phone,
-        "agent_email": agent_email,
-        "print_safe_logo": print_safe_logo,
-    })
 
     files = request.files.getlist("files")
     batch_id = uuid.uuid4().hex[:10]

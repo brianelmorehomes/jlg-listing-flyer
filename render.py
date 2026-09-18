@@ -217,7 +217,12 @@ def parking_note(listing):
         parts.append("Not included in price")
     elif incl == "yes":
         parts.append("Included in price")
-    ownership = (listing.garage_ownership or "").strip()
+    # Garage Ownership and Parking Ownership are mutually exclusive on a
+    # given sheet (one for a garage spot, one for a non-garage/exterior
+    # spot) -- e.g. a rental's "Parking Ownership: Fee/Leased ($250)" is
+    # just as real a buyer-facing cost as a for-sale garage's "Deeded Sold
+    # Separately ($25,000)".
+    ownership = (listing.garage_ownership or listing.parking_ownership or "").strip()
     if "$" in ownership:
         parts.append(ownership)
     return " — ".join(parts)
@@ -645,14 +650,21 @@ def feature_groups(listing, water_features_display_val, water_utilities_display_
         # parking_note() near the price only surfaces this field when it
         # contains "$" (that one's specifically about cost), but "Owned"
         # vs. "Leased" is a real fact this card should carry regardless.
-        ownership = (listing.garage_ownership or "").strip()
+        # Garage Ownership/Details and Parking Ownership/Details are
+        # mutually exclusive on a given sheet (garage spot vs. non-garage/
+        # exterior spot), so falling back to the Parking-side field covers
+        # listings like a rental's assigned outdoor or underground space.
+        ownership = (listing.garage_ownership or listing.parking_ownership or "").strip()
         if ownership:
             body += f" · {ownership}"
-        if listing.garage_details:
-            body += f" · {listing.garage_details}"
+        details = listing.garage_details or listing.parking_details
+        if details:
+            body += f" · {details}"
         groups.append(("Parking & Garage", body))
     if listing.amenities:
         groups.append(("Building Amenities", listing.amenities))
+    if listing.nearby_transit:
+        groups.append(("Nearby Transit", listing.nearby_transit))
     return groups
 
 
@@ -712,31 +724,44 @@ def render_flyer(
         # the hero photo box shows just the real photo, scaled/cropped
         # sensibly by `background-size: cover` instead of a tiny image
         # framed in black.
+        #
+        # A column/row is judged "bar" by what FRACTION of its sampled
+        # pixels are near-black, not by mean+variance across the whole
+        # column. The original variance-based check broke on real photos
+        # where a thin foreground object (a tree branch, an antenna, a
+        # fence post) crosses into the black bar at even one sampled row --
+        # that single bright/varied sample spiked the column's variance
+        # past the threshold and stopped the crop scan almost immediately,
+        # leaving most of the bar in place (seen on a Home Platform photo
+        # where a tree branch at x=5 halted a ~45px-wide left bar after
+        # only 5px). Requiring a high dark-pixel majority (92%) instead of
+        # low variance tolerates that kind of small intrusion while still
+        # rejecting genuinely detailed/bright regions.
         try:
-            from PIL import Image
+            from PIL import Image, ImageFilter
 
-            def _autocrop_black_bars(im, thresh=12, max_std=6):
+            def _autocrop_black_bars(im, thresh=12, dark_frac=0.92):
                 im = im.convert("RGB")
                 w, h = im.size
                 px = im.load()
 
                 def col_is_bar(x):
-                    vals = [px[x, y] for y in range(0, h, max(1, h // 50))]
-                    means = [sum(v) / 3 for v in vals]
-                    avg = sum(means) / len(means)
-                    if avg > thresh:
-                        return False
-                    var = sum((m - avg) ** 2 for m in means) / len(means)
-                    return var ** 0.5 <= max_std
+                    total = dark = 0
+                    for y in range(0, h, max(1, h // 100)):
+                        r, g, b = px[x, y]
+                        total += 1
+                        if (r + g + b) / 3 <= thresh:
+                            dark += 1
+                    return total > 0 and dark / total >= dark_frac
 
                 def row_is_bar(y):
-                    vals = [px[x, y] for x in range(0, w, max(1, w // 50))]
-                    means = [sum(v) / 3 for v in vals]
-                    avg = sum(means) / len(means)
-                    if avg > thresh:
-                        return False
-                    var = sum((m - avg) ** 2 for m in means) / len(means)
-                    return var ** 0.5 <= max_std
+                    total = dark = 0
+                    for x in range(0, w, max(1, w // 100)):
+                        r, g, b = px[x, y]
+                        total += 1
+                        if (r + g + b) / 3 <= thresh:
+                            dark += 1
+                    return total > 0 and dark / total >= dark_frac
 
                 left = 0
                 while left < w // 2 and col_is_bar(left):
@@ -763,6 +788,34 @@ def render_flyer(
 
             with Image.open(photo_path) as im:
                 im = _autocrop_black_bars(im)
+                # Home Platform's own PDF export embeds the property photo
+                # as a genuinely tiny thumbnail -- confirmed a fixed
+                # 135px-tall embed across every real sample checked
+                # (89-203px wide depending on aspect ratio), vs. MRED's
+                # ~300px embeds. The hero photo box is a fixed 2.95in x
+                # 1.97in regardless of source, so at print resolution
+                # (~300dpi, ~885x591px) a 135px-tall source has to stretch
+                # roughly 4-6x -- soft/blurry no matter what, since there's
+                # no missing detail to recover, just too few source pixels.
+                # Left entirely to the PDF renderer, that stretch uses
+                # whatever interpolation it defaults to (unknown quality,
+                # and the same interpolation was already looking bad
+                # enough that Brian noticed). Doing one deliberate
+                # high-quality upscale ourselves first -- Lanczos
+                # resampling plus a mild unsharp mask to counter the
+                # softness resizing always introduces -- looks
+                # meaningfully better. Gated on the source actually being
+                # this small (well under MRED's ~300px floor) so MRED/
+                # MichRIC photos, which don't have this problem, pass
+                # through unchanged rather than risking a sharpening
+                # artifact on an image that was already fine.
+                if min(im.size) < 250:
+                    scale = 600 / min(im.size)
+                    im = im.resize(
+                        (round(im.width * scale), round(im.height * scale)),
+                        Image.LANCZOS,
+                    )
+                    im = im.filter(ImageFilter.UnsharpMask(radius=1.2, percent=180, threshold=2))
                 im.save(photo_path, format="JPEG", quality=90, dpi=(96, 96))
         except Exception:
             pass

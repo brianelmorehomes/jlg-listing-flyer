@@ -37,12 +37,21 @@ Two real differences from the classic sheets that matter for callers:
    RICHER variant (confirmed on a real sample, 6811 116th Avenue) adds a
    second "Property Information" page with exactly that detail --
    Taxes and HOA (incl. current taxable value), Parking, Building
-   Features (incl. Foundation Details for basement), and a nested
-   Interior Features grid (Total Rooms, Total Fireplaces, etc.) -- all
-   read into `taxeshoa`/`parking`/`buildingfeat`/`interiorfeat` below via
-   `_bold_row_headers()`/`_all_headers()`, since that page's subsection
-   headings render at the same 7.0pt body size as ordinary label text and
-   the plain size-based `_section_headers()` alone can't see them. Two
+   Features (incl. Foundation Details for basement, Construction
+   Materials, Roof), Utilities (Water Source, Sewer), a nested Exterior
+   Features grid (Patio And Porch Features, Private Pool) and Interior
+   Features grid (Total Rooms, Total Fireplaces, Appliances, Cooling,
+   Heating, Flooring, Laundry Features, Window Features, Security
+   Features, Fireplace Features), plus a separate "Room Information" page
+   of room-by-room Type/Level/Dimensions -- all read into
+   `taxeshoa`/`parking`/`buildingfeat`/`utilities`/`exteriorfeat`/
+   `interiorfeat`/`rooms_raw` below via `_bold_row_headers()`/
+   `_all_headers()` (for the grid sections) and `_parse_room_dimensions()`
+   (for the room-by-room page, which needs no header bounding at all --
+   see its own docstring), since the "Property Information" page's
+   subsection headings render at the same 7.0pt body size as ordinary
+   label text and the plain size-based `_section_headers()` alone can't
+   see them. Two
    things stay true regardless of variant: no County field at all
    (MRED/MichRIC's classic sheets both carry County directly), and every
    new lookup above degrades gracefully to blank on a simpler export that
@@ -124,29 +133,57 @@ def _extract_kv_grid(words, top_min, top_max, row_tol=3):
         rows.append(cur)
 
     kv = {}
+    # Remembers, per rough horizontal column (bucketed by the x0 where that
+    # column's VALUE text starts), which label is currently "open" in that
+    # column -- lets a value too long to fit before the next column's label
+    # starts glue its wrapped continuation onto the SAME label on the next
+    # row, instead of being silently dropped. Confirmed necessary on a real
+    # sample: "Appliances" ran long enough to wrap mid-word, splitting
+    # "Range" itself across two rows ("...Washer,R" / "ange,Oven,Electric
+    # Water Heater") with literally zero space at the split -- pdfplumber's
+    # own extract_text() shows the identical break, so this is a genuine
+    # PDF layout wrap, not an artifact of word-boxing. Scoped to one
+    # _extract_kv_grid() call (this dict is local, not module-level), so it
+    # can never bleed a label from one section/call into another.
+    open_label_by_col = {}
     for row in rows:
         row.sort(key=lambda w: w["x0"])
-        pairs = []
-        label_words, value_words = [], []
+        pairs = []  # (label_words, value_words, value_x0)
+        label_words, value_words, value_x0 = [], [], None
         mode = None
         for w in row:
             is_bold = "Bold" in (w.get("fontname") or "")
             if is_bold:
                 if mode == "value" and (label_words or value_words):
-                    pairs.append((label_words, value_words))
-                    label_words, value_words = [], []
+                    pairs.append((label_words, value_words, value_x0))
+                    label_words, value_words, value_x0 = [], [], None
                 mode = "label"
                 label_words.append(w["text"])
             else:
+                if value_x0 is None:
+                    value_x0 = w["x0"]
                 mode = "value"
                 value_words.append(w["text"])
         if label_words or value_words:
-            pairs.append((label_words, value_words))
-        for lw, vw in pairs:
+            pairs.append((label_words, value_words, value_x0))
+        for lw, vw, vx0 in pairs:
             label = " ".join(lw).strip()
             value = " ".join(vw).strip()
             if label:
                 kv[label] = value
+                if vx0 is not None:
+                    open_label_by_col[round(vx0 / 30) * 30] = label
+            elif value and vx0 is not None:
+                # A value with no label on this row at all -- almost
+                # certainly a wrapped continuation (see comment above), so
+                # glue it onto whichever label is currently open in this
+                # exact column, with NO separating space (the wrap can
+                # split mid-word). If nothing's open in this column, this
+                # is genuinely orphaned data (shouldn't happen on any real
+                # sample seen) and is dropped, same as before this fix.
+                open_label = open_label_by_col.get(round(vx0 / 30) * 30)
+                if open_label is not None:
+                    kv[open_label] = kv.get(open_label, "") + value
     return kv
 
 
@@ -239,6 +276,108 @@ def _all_headers(words):
     for text, top in _bold_row_headers(words):
         merged.setdefault(top, text)
     return sorted(((text, top) for top, text in merged.items()), key=lambda x: x[1])
+
+
+def _tidy_list(s):
+    """"Aluminum Siding,Vinyl Siding" -> "Aluminum Siding, Vinyl Siding" --
+    every comma-separated multi-value field on this platform's "Property
+    Information" page grid renders with NO space after the comma in the
+    underlying PDF content (confirmed directly on real samples: this is
+    how the source text actually is, not a word-extraction artifact), which
+    reads as run-together on a printed flyer. Only touches a bare comma
+    with no following space, so it's safe to run on values that already
+    have proper spacing (nothing to change) or that never had commas at
+    all (e.g. "Insulated Windows,Screens,Skylights" ->
+    "Insulated Windows, Screens, Skylights")."""
+    return re.sub(r",(?=\S)", ", ", s or "")
+
+
+def _fmt_dim(s):
+    """"9.0" -> "9", "10.5" -> "10.5" -- strips a trailing whole-number
+    ".0" so room dimensions read the way an agent would actually write
+    them, matching the "L x W" convention parser.py/parser_michric.py's
+    own room tables already use."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    try:
+        f = float(s)
+    except ValueError:
+        return s
+    return str(int(f)) if f == int(f) else str(f)
+
+
+_ROOM_MARKER_RE = re.compile(r"^Room\s+(\d+)$")
+
+
+def _parse_room_dimensions(words, page_bottom):
+    """Room-by-room dimensions from this platform's "Room Information"
+    page (Client page 3 of 4 on every real sample seen) -- confirmed via a
+    real word-position dump that each "Room N" marker ("Room" + a bare
+    number, e.g. "Room 1") sits alone on its own row, both words bold and
+    nothing else sharing that row -- a signal unique enough on this sheet
+    that no header/section bounding is needed to find them, unlike every
+    other section this file reads. Each room's own body directly below its
+    marker is laid out exactly like Key Details' grid (bold label +
+    regular value, up to 2 pairs per row: Type/Length on one row, Level/
+    Width on the next, Dimensions alone on a third), so this slices the
+    page's words between consecutive markers and hands each slice to the
+    same _extract_kv_grid() every other grid section already uses, rather
+    than reinventing that parsing.
+
+    Builds `size` from the Length/Width fields (clean floats, e.g. "9.0")
+    instead of the sheet's own pre-formatted "Dimensions" text, which was
+    confirmed inconsistently spaced from room to room on the one real
+    sample checked ("9x9" for some rooms, "10 x 10" for others, purely an
+    artifact of how pdfplumber tokenized the "x" at different widths) --
+    Length x Width is unambiguous and always present whenever Dimensions
+    is, so it's the more reliable source for the same information.
+
+    That same real sample has one room (Room 7) missing "Type" entirely --
+    a genuine gap in the source MLS data, not a parsing failure: Level/
+    Width/Dimensions/Length are all present for it, just no room name.
+    Falls back to a bare "Room" label rather than dropping the row
+    outright, since its dimensions are still real data worth showing."""
+    rows = []
+    cur_top, cur = None, []
+    for w in sorted(words, key=lambda w: (w["top"], w["x0"])):
+        if cur_top is None or abs(w["top"] - cur_top) <= 3:
+            cur.append(w)
+            cur_top = w["top"] if cur_top is None else cur_top
+        else:
+            rows.append((cur_top, cur))
+            cur, cur_top = [w], w["top"]
+    if cur:
+        rows.append((cur_top, cur))
+
+    markers = []
+    for top, row in rows:
+        row_sorted = sorted(row, key=lambda w: w["x0"])
+        text = " ".join(w["text"] for w in row_sorted)
+        all_bold = all("Bold" in (w.get("fontname") or "") for w in row_sorted)
+        if all_bold and _ROOM_MARKER_RE.match(text):
+            markers.append(top)
+
+    if not markers:
+        return []
+
+    rooms = []
+    for idx, start in enumerate(markers):
+        end = markers[idx + 1] if idx + 1 < len(markers) else page_bottom
+        kv = _extract_kv_grid(words, start, end)
+        name = kv.get("Type", "").strip() or "Room"
+        # "Bedroom2" (no space) shows up alongside properly-spaced
+        # "Bedroom 2" for other rooms on the same real sample -- a genuine
+        # MLS data-entry inconsistency, not a parsing artifact (confirmed
+        # via word-level dump: the source literally has one token
+        # "Bedroom2"). Cosmetic fix so it doesn't look broken on a
+        # client-facing flyer.
+        name = re.sub(r"([A-Za-z])(\d)", r"\1 \2", name)
+        length = _fmt_dim(kv.get("Length", ""))
+        width = _fmt_dim(kv.get("Width", ""))
+        size = f"{length} x {width}" if length and width else ""
+        rooms.append({"name": name, "size": size, "level": kv.get("Level", "").strip(), "flooring": ""})
+    return rooms
 
 
 def _section_bounds(headers, name, page_bottom):
@@ -577,8 +716,16 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         parking = {}       # Parking
         buildingfeat = {}  # Building Features
         interiorfeat = {}  # Interior Features
+        utilities = {}     # Utilities (Water Source/Sewer/Electric/fuel)
+        exteriorfeat = {}  # Exterior Features (nested under "Interior and
+                            # Exterior Features", a sibling of Interior
+                            # Features -- see the Interior Features comment
+                            # below for why these are two separate nested
+                            # sub-headings rather than one combined section)
         rooms_total_raw = ""
         garage_cost_raw = ""
+        rooms_raw = []     # Room Information page -- see
+                            # _parse_room_dimensions()
         description = ""
         amenities_text = ""
         schools_lines = []
@@ -637,15 +784,32 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             bf = _grid_section(words, headers, "Building Features", bottom)
             if bf:
                 buildingfeat.update(bf)
+            ut = _grid_section(words, headers, "Utilities", bottom)
+            if ut:
+                utilities.update(ut)
             # NOT "Interior and Exterior Features" -- that's the parent
             # heading; the actual Total Rooms/Total Fireplaces/Basement/
             # Bathrooms grid sits under its own nested "Interior Features"
             # sub-heading further down (confirmed on a real sample: "Interior
             # and Exterior Features" is immediately followed by an "Exterior
-            # Features" sub-section, THEN "Interior Features").
+            # Features" sub-section, THEN "Interior Features"). "Exterior
+            # Features" (Patio And Porch Features, Private Pool) is that
+            # sibling sub-section, read out separately here for the same
+            # reason.
+            extf = _grid_section(words, headers, "Exterior Features", bottom)
+            if extf:
+                exteriorfeat.update(extf)
             intf = _grid_section(words, headers, "Interior Features", bottom)
             if intf:
                 interiorfeat.update(intf)
+            # Room Information -- a dedicated page (Client page 3 of 4 on
+            # every real sample seen) of room-by-room Type/Level/Dimensions
+            # data. No header/section bounding needed to find it -- see
+            # _parse_room_dimensions()'s own docstring -- so this just
+            # tries every page in use_idx and naturally comes back empty on
+            # every page that isn't the Room Information page.
+            if not rooms_raw:
+                rooms_raw = _parse_room_dimensions(words, bottom)
             if not description:
                 description = _text_section(words, headers, "Description", bottom)
             if not amenities_text:
@@ -819,9 +983,103 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     heat = details.get("Heat/Fuel", "")
     if heat:
         listing.heating = heat
+    elif not listing.heating:
+        # Key Details doesn't carry Heat/Fuel on the richer "Property
+        # Information" page variant -- there it's a plain "Heating" field
+        # nested under Interior Features instead (e.g. "Forced Air,
+        # Propane"). _tidy_list() adds a space after each comma -- this
+        # sheet's own grid values have none ("Forced Air,Propane"), which
+        # reads as run-together on a printed flyer.
+        heat2 = interiorfeat.get("Heating", "")
+        if heat2 and not _is_nullish(heat2):
+            listing.heating = _tidy_list(heat2)
     cooling = details.get("Air Conditioning Type", "")
     if cooling:
         listing.cooling = cooling
+    elif not listing.cooling:
+        cooling2 = interiorfeat.get("Cooling", "")
+        if cooling2 and not _is_nullish(cooling2):
+            listing.cooling = _tidy_list(cooling2)
+
+    # --- Appliances / laundry / fireplace type (richer page variant only) --
+    appliances = interiorfeat.get("Appliances", "")
+    if appliances and not _is_nullish(appliances):
+        listing.appliances = _tidy_list(appliances)
+    laundry = interiorfeat.get("Laundry Features", "")
+    if laundry and not _is_nullish(laundry):
+        listing.laundry = _tidy_list(laundry)
+    fireplace_features = interiorfeat.get("Fireplace Features", "")
+    if fireplace_features and not _is_nullish(fireplace_features):
+        listing.fireplace_details = _tidy_list(fireplace_features)
+
+    # --- Interior features (base value + Flooring/Window/Security folded
+    # in, same "; Label: value" convention parser.py/parser_michric.py use
+    # for extra bits that don't warrant their own card) --------------------
+    interior_parts = []
+    interior_base = interiorfeat.get("Interior Features", "")
+    if interior_base and not _is_nullish(interior_base):
+        interior_parts.append(_tidy_list(interior_base))
+    flooring = interiorfeat.get("Flooring", "")
+    if flooring and not _is_nullish(flooring):
+        interior_parts.append(f"Flooring: {_tidy_list(flooring)}")
+    window_features = interiorfeat.get("Window Features", "")
+    if window_features and not _is_nullish(window_features):
+        interior_parts.append(f"Windows: {_tidy_list(window_features)}")
+    security_features = interiorfeat.get("Security Features", "")
+    if security_features and not _is_nullish(security_features):
+        interior_parts.append(f"Security: {_tidy_list(security_features)}")
+    if interior_parts:
+        listing.interior_features = "; ".join(interior_parts)
+
+    # --- Exterior features (Building Features' Construction Materials/Roof
+    # + the nested Exterior Features sub-section's Patio/Porch + Pool) -----
+    exterior_parts = []
+    construction = buildingfeat.get("Construction Materials", "")
+    if construction and not _is_nullish(construction):
+        exterior_parts.append(_tidy_list(construction))
+    roof = buildingfeat.get("Roof", "")
+    if roof and not _is_nullish(roof):
+        exterior_parts.append(f"Roof: {_tidy_list(roof)}")
+    patio_porch = exteriorfeat.get("Patio And Porch Features", "")
+    if patio_porch and not _is_nullish(patio_porch):
+        exterior_parts.append(f"Patio/Porch: {_tidy_list(patio_porch)}")
+    if exterior_parts:
+        listing.exterior_features = "; ".join(exterior_parts)
+    pool = exteriorfeat.get("Private Pool", "")
+    if pool and not _is_nullish(pool):
+        listing.pool = pool
+
+    # --- Water source / sewer (Utilities section, richer page variant only)
+    # Brian's guidance (see render.py's water_utilities_display()): for
+    # Michigan buyers specifically, well-vs-municipal water and septic-vs-
+    # public sewer are real cost/maintenance facts worth their own card,
+    # not a minor detail to bury elsewhere. Previously only ever populated
+    # for MichRIC-sourced listings -- this is the Home Platform equivalent.
+    water_source = utilities.get("Water Source", "")
+    if water_source and not _is_nullish(water_source):
+        listing.water_source = water_source
+    sewer = utilities.get("Sewer", "")
+    if sewer and not _is_nullish(sewer):
+        listing.sewer_type = _tidy_list(sewer)
+
+    # --- Garage attached/detached (Parking Features, richer page variant
+    # only) -- parking_type/parking_spaces above only say "Garage" + a
+    # count, not whether it's attached or detached, which is the specific
+    # fact buyers actually ask about (see render.py's feature_groups()).
+    parking_features = parking.get("Parking Features", "")
+    if parking_features and not listing.garage_type:
+        pf_low = parking_features.lower()
+        if "attached" in pf_low and "detached" not in pf_low:
+            listing.garage_type = "Attached"
+        elif "detached" in pf_low:
+            listing.garage_type = "Detached"
+
+    # --- Room-by-room dimensions (Room Information page, richer page
+    # variant only) -- see _parse_room_dimensions(). render.py/flyer.html
+    # already know how to lay this out as a Room Dimensions table; this
+    # platform just never fed it one before.
+    if rooms_raw:
+        listing.rooms = rooms_raw
 
     # --- Waterfront (MichRIC-sourced listings only carry these here) -------
     if details.get("Has Waterfront", "").strip().lower() == "yes":

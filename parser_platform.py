@@ -27,20 +27,32 @@ Two real differences from the classic sheets that matter for callers:
    extraction below is driven by font weight, not a fixed field list --
    an unrecognized bold label is just a dict key nothing ever looks up.
 
-2. This sheet has meaningfully LESS data than a MichRIC full-detail
-   report: no room dimensions table, no categorized interior/exterior/
-   construction feature grid, no water source/sewer, no heating type
-   breakdown, no basement finish detail, no fireplace detail, and no
-   County field at all (MRED/MichRIC's classic sheets both carry County
-   directly). Flyers built from this source will legitimately have more
-   blank/placeholder cards than one built from a classic MRED or MichRIC
-   sheet -- that's an honest reflection of what this source actually
-   contains, not a parsing bug. The missing County field specifically
-   means jlg-showing-packet's route-map geocoding (packet.py's
-   _county_level() rural-address fallback) has nothing to fall back on
-   for listings parsed from this source -- worth knowing if a showing
-   packet stop sourced this way ever lands a mislocated pin the way
-   6456 104th Avenue did before that fix.
+2. This sheet comes in (at least) two export variants that carry
+   noticeably different amounts of data, and callers can't tell which
+   they got except by whether the extra sections come back empty. A
+   SIMPLER variant really is meaningfully thinner than a MichRIC full-
+   detail report: no room dimensions table, no categorized interior/
+   exterior/construction feature grid, no water source/sewer, no heating
+   type breakdown, no basement finish detail, no fireplace detail. But a
+   RICHER variant (confirmed on a real sample, 6811 116th Avenue) adds a
+   second "Property Information" page with exactly that detail --
+   Taxes and HOA (incl. current taxable value), Parking, Building
+   Features (incl. Foundation Details for basement), and a nested
+   Interior Features grid (Total Rooms, Total Fireplaces, etc.) -- all
+   read into `taxeshoa`/`parking`/`buildingfeat`/`interiorfeat` below via
+   `_bold_row_headers()`/`_all_headers()`, since that page's subsection
+   headings render at the same 7.0pt body size as ordinary label text and
+   the plain size-based `_section_headers()` alone can't see them. Two
+   things stay true regardless of variant: no County field at all
+   (MRED/MichRIC's classic sheets both carry County directly), and every
+   new lookup above degrades gracefully to blank on a simpler export that
+   lacks that page -- so this is additive, not a replacement for the
+   simpler-variant handling. The missing County field specifically means
+   jlg-showing-packet's route-map geocoding (packet.py's _county_level()
+   rural-address fallback) has nothing to fall back on for listings
+   parsed from this source -- worth knowing if a showing packet stop
+   sourced this way ever lands a mislocated pin the way 6456 104th Avenue
+   did before that fix.
 
 Detection and extraction approach
 ----------------------------------
@@ -167,6 +179,66 @@ def _section_headers(words):
         row.sort(key=lambda w: w["x0"])
         out.append((" ".join(w["text"] for w in row), row[0]["top"]))
     return out
+
+
+def _bold_row_headers(words, row_tol=3, gap_threshold=13.0):
+    """Catches a SECOND tier of section headings that `_section_headers()`
+    above misses entirely: on this platform's richer "Property Information"
+    page (Location and General Information / Taxes and HOA / Parking /
+    Building Features / Interior Features / etc. -- present on some exports
+    of this format but not others, see module docstring update below), the
+    subsection headings render bold at the SAME 7.0pt size as ordinary
+    label words, so the size>=7.5 threshold alone can't tell a heading like
+    "Parking" apart from a label like "Parcel Number". What DOES reliably
+    tell them apart: a heading is the only bold-only content on its row (no
+    regular-weight value word shares it) AND sits with extra vertical
+    whitespace above it (confirmed ~17-19pt on real samples vs. the sheet's
+    normal ~10.5pt body line-height) -- headings get breathing room, plain
+    label:value rows don't.
+
+    That gap check specifically is what keeps this from misfiring on a
+    label whose bold text happens to wrap across two lines with nothing
+    else on the second line -- confirmed on a real sample where "Previous
+    sold price" (a 3-word label) wrapped as "Previous sold" + value on one
+    row and a lone bold "price" on the next: that wrapped "price" row IS
+    all-bold with no value, but its gap from the row above is the sheet's
+    normal ~10.5pt body spacing, not the ~17-19pt a real heading gets, so
+    the gap threshold correctly excludes it while still catching every
+    genuine heading. Returned separately from _section_headers() rather
+    than merged into it -- see call sites, which combine both lists -- so
+    this stays purely additive and can't change what already works there."""
+    rows = []
+    cur_top, cur = None, []
+    for w in sorted(words, key=lambda w: (w["top"], w["x0"])):
+        if cur_top is None or abs(w["top"] - cur_top) <= row_tol:
+            cur.append(w)
+            cur_top = w["top"] if cur_top is None else cur_top
+        else:
+            rows.append(cur)
+            cur, cur_top = [w], w["top"]
+    if cur:
+        rows.append(cur)
+
+    out = []
+    prev_top = None
+    for row in rows:
+        row_sorted = sorted(row, key=lambda w: w["x0"])
+        top = row_sorted[0]["top"]
+        all_bold = all("Bold" in (w.get("fontname") or "") for w in row_sorted)
+        gap = (top - prev_top) if prev_top is not None else 999
+        if all_bold and gap >= gap_threshold:
+            out.append((" ".join(w["text"] for w in row_sorted), top))
+        prev_top = top
+    return out
+
+
+def _all_headers(words):
+    """Merges both header tiers (see _bold_row_headers) into one top-sorted
+    list for _section_bounds()/_grid_section()/_section_rows() to use."""
+    merged = {top: text for text, top in _section_headers(words)}
+    for text, top in _bold_row_headers(words):
+        merged.setdefault(top, text)
+    return sorted(((text, top) for top, text in merged.items()), key=lambda x: x[1])
 
 
 def _section_bounds(headers, name, page_bottom):
@@ -486,6 +558,14 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         history = {}      # Property History
         propdetails = {}  # Property Details
         pubrecords = {}   # Public Records
+        # These four only exist on the richer "Property Information" page
+        # some exports of this platform's sheet include (see
+        # _bold_row_headers() docstring) -- a simpler export without that
+        # page just leaves these empty, same as before this was added.
+        taxeshoa = {}      # Taxes and HOA
+        parking = {}       # Parking
+        buildingfeat = {}  # Building Features
+        interiorfeat = {}  # Interior Features
         description = ""
         amenities_text = ""
         schools_lines = []
@@ -505,7 +585,7 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             # _text_section() swallows the entire multi-hundred-word
             # disclaimer paragraph into that section's value.
             words = [w for w in words if w.get("size", 0) >= 6.0]
-            headers = _section_headers(words)
+            headers = _all_headers(words)
             bottom = page.height
 
             d = _grid_section(words, headers, "Key Details", bottom)
@@ -527,6 +607,24 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
             pr = _grid_section(words, headers, "Public Records", bottom)
             if pr:
                 pubrecords.update(pr)
+            th = _grid_section(words, headers, "Taxes and HOA", bottom)
+            if th:
+                taxeshoa.update(th)
+            pk = _grid_section(words, headers, "Parking", bottom)
+            if pk:
+                parking.update(pk)
+            bf = _grid_section(words, headers, "Building Features", bottom)
+            if bf:
+                buildingfeat.update(bf)
+            # NOT "Interior and Exterior Features" -- that's the parent
+            # heading; the actual Total Rooms/Total Fireplaces/Basement/
+            # Bathrooms grid sits under its own nested "Interior Features"
+            # sub-heading further down (confirmed on a real sample: "Interior
+            # and Exterior Features" is immediately followed by an "Exterior
+            # Features" sub-section, THEN "Interior Features").
+            intf = _grid_section(words, headers, "Interior Features", bottom)
+            if intf:
+                interiorfeat.update(intf)
             if not description:
                 description = _text_section(words, headers, "Description", bottom)
             if not amenities_text:
@@ -569,6 +667,24 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
     fireplaces = details.get("Num of Interior Fireplaces", "")
     if fireplaces and not _is_nullish(fireplaces):
         listing.fireplaces = fireplaces
+    elif not listing.fireplaces:
+        # Key Details doesn't carry this label on the richer "Property
+        # Information" page variant (see _bold_row_headers()) -- there it
+        # only shows up nested under Interior Features as "Total
+        # Fireplaces". Only used as a fallback since some sheets carry
+        # both and the Key Details label above is the one already proven
+        # against real samples.
+        tf = interiorfeat.get("Total Fireplaces", "")
+        if tf and not _is_nullish(tf):
+            listing.fireplaces = tf
+
+    # Room count -- only available on the richer "Property Information"
+    # page variant, nested under Interior Features as "Total Rooms". No
+    # equivalent field anywhere in Key Details/Property Details on this
+    # platform, so there's no existing value to guard against overwriting.
+    rooms_total = interiorfeat.get("Total Rooms", "")
+    if rooms_total and not _is_nullish(rooms_total):
+        listing.rooms_total = rooms_total
 
     # Open house -- Key Details' compact one-line version ("Sat, Sep 19th
     # 11:00 AM - 1:00 PM"), already sitting in `details` from the same grid
@@ -590,6 +706,17 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         n = parking_spaces.split(".")[0]
         listing.parking_type = "Space/s"
         listing.parking_spaces = n
+    elif not listing.parking_spaces:
+        # Key Details' "Num Of Garage Spaces"/"Num Of Parking Spaces"
+        # labels don't exist on the richer "Property Information" page
+        # variant -- there the count lives in its own "Parking" section
+        # as "Garage Spaces" instead (e.g. "2.5"). Only used as a
+        # fallback since the Key Details labels above are the ones
+        # already proven against real samples.
+        garage_spaces2 = parking.get("Garage Spaces", "")
+        if garage_spaces2 and not _is_nullish(garage_spaces2):
+            listing.parking_type = "Garage"
+            listing.parking_spaces = garage_spaces2.split(".")[0]
     incl = details.get("Parking Included in Price", "")
     if incl:
         listing.parking_incl_in_price = incl
@@ -618,6 +745,20 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         amt, _, freq = hoa.partition("/")
         listing.assessment_amount = money(amt.strip())
         listing.assessment_frequency = freq.strip().capitalize() or "mo"
+
+    # Current taxable value (Michigan Prop A) -- only available on the
+    # richer "Property Information" page variant, in its own "Taxes and
+    # HOA" section as "Tax Assessed Value". Confirmed via mill-rate math
+    # on a real sample (annual tax / this figure * 1000 landed on ~48.6
+    # mills, a plausible MI rate) that this is the CURRENT taxable value
+    # the shown tax bill is actually based on, NOT the SEV (which uncaps
+    # to match this the year after a sale) -- so it maps to
+    # tax_taxable_value, which render.py's tax_uncap_note() actively uses
+    # for a precise homestead/non-homestead post-sale $/yr estimate,
+    # rather than tax_sev, which nothing reads for display.
+    taxable_value = taxeshoa.get("Tax Assessed Value", "")
+    if taxable_value and not _is_nullish(taxable_value):
+        listing.tax_taxable_value = money(taxable_value)
 
     # --- Property History: dates/DOM/price history --------------------------
     list_date = history.get("List date", "")
@@ -675,6 +816,20 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         if m:
             listing.stories = m.group(1)
 
+    # --- Basement (Building Features, richer page variant only) --------------
+    # Preferred over the Amenities substring fallback below -- direct field,
+    # not a comma-split guess, and correctly handles values like "Crawl
+    # Space" that don't contain the word "basement" at all (so the fallback
+    # below would never have caught them, and shouldn't have to guess a
+    # basement-vs-crawlspace distinction from a token that doesn't say
+    # either). basement_display() in render.py accepts any string here and
+    # renders it as-is (plus an optional "(bath included)" suffix), so this
+    # doesn't need any Yes/No normalization the way the amenities fallback
+    # does.
+    foundation = buildingfeat.get("Foundation Details", "")
+    if foundation and not _is_nullish(foundation):
+        listing.basement = foundation
+
     # --- Amenities / Description / Schools -----------------------------------
     if amenities_text:
         listing.amenities = amenities_text
@@ -693,10 +848,11 @@ def parse_listing_pdf(file_bytes: bytes, source_filename: str = "") -> Listing:
         # over the bare one when both are present, and only falls back to
         # bare "Basement" -> "Yes" when that's genuinely all the sheet
         # gives us.
-        basement_tokens = [t.strip() for t in amenities_text.split(",") if "basement" in t.lower()]
-        if basement_tokens:
-            basement_item = next((t for t in basement_tokens if t.lower() != "basement"), basement_tokens[0])
-            listing.basement = "Yes" if basement_item.lower() == "basement" else basement_item
+        if not listing.basement:
+            basement_tokens = [t.strip() for t in amenities_text.split(",") if "basement" in t.lower()]
+            if basement_tokens:
+                basement_item = next((t for t in basement_tokens if t.lower() != "basement"), basement_tokens[0])
+                listing.basement = "Yes" if basement_item.lower() == "basement" else basement_item
     if description:
         listing.remarks = description
     if schools_lines:

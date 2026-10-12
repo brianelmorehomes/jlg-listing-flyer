@@ -16,10 +16,10 @@ plural, batch-aware `parse_listing_pdfs()` -- MRED lets an agent export a
 "Full Report" for a whole search result set as one PDF with each
 listing's sheet concatenated back-to-back, and parser.py's
 `parse_listing_pdfs()` already detects and splits that apart (see
-parser.py's own docstring/comments). MichRIC and the new Home Platform
-sheet have no equivalent multi-listing export format -- each upload from
-either is always exactly one listing -- so those two branches below
-always return a single-item list rather than attempting any split.
+parser.py's own docstring/comments). MichRIC has no equivalent
+multi-listing export, so that branch always returns a single-item list.
+The Home Platform export CAN hold several listings (a buyer-tour print),
+so that branch splits the file per listing via the shared hp_core parser.
 
 Detection is a cheap text signature check (each source's own copyright/
 disclaimer line names itself, e.g. "...Copyright 2026 MichRIC(R), LLC..."
@@ -55,12 +55,38 @@ def _sniff_text(file_bytes: bytes) -> str:
         return ""
 
 
+def _split_platform_listings(file_bytes: bytes):
+    """A Home Platform export can hold several listings back-to-back (each
+    starts at "Page 1/N"). hp_core knows which pages belong to which listing;
+    this cuts the file into one PDF per listing so the classic parser (which
+    expects exactly one) runs on each. Returns [file_bytes] when there is only
+    one listing or anything goes wrong."""
+    try:
+        import fitz
+        import hp_core
+        recs = hp_core.parse_file(file_bytes, prefer="client", client_safe=True)
+        if len(recs) <= 1:
+            return [file_bytes]
+        src = fitz.open(stream=file_bytes, filetype="pdf")
+        parts = []
+        for r in recs:
+            out = fitz.open()
+            for pg in r["source_pages"]:
+                out.insert_pdf(src, from_page=pg, to_page=pg)
+            parts.append(out.tobytes())
+            out.close()
+        src.close()
+        return parts
+    except Exception:
+        return [file_bytes]
+
+
 def parse_listing_pdfs(file_bytes: bytes, source_filename: str = ""):
     """Always returns a list, even for a single listing -- same contract as
     parser.py's own parse_listing_pdfs(), which is what app.py calls."""
     text = _sniff_text(file_bytes)
     if is_new_platform(text):
-        return [_parse_platform(file_bytes, source_filename)]
+        return [_parse_platform(part, source_filename) for part in _split_platform_listings(file_bytes)]
     if is_michric(text):
         return [_parse_michric(file_bytes, source_filename)]
     return _parse_mred_batch(file_bytes, source_filename)

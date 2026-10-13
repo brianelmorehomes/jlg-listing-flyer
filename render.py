@@ -967,7 +967,7 @@ def render_flyer(
         hp_tmpl = env.get_template("flyer_hp.html")
         status = "Private Listing" if is_private_listing(listing) else (listing.hp.get("status") or status_label_for(listing))
         attempts = [("", False), ("dense", False), ("very-dense", False)]
-        for density, fill in attempts:
+        for attempt_no, (density, fill) in enumerate(attempts):
             ctx = hp_flyer_context(listing, density, fill)
             html_str = hp_tmpl.render(
                 l=listing, font_dir=FONT_DIR, logo_jlg=JLG_BLOCK,
@@ -976,14 +976,12 @@ def render_flyer(
                 agent_email=agent_email, agent_name=agent_name or "Brian Elmore",
                 prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
                 page_offset=1, total_pages=2, density=density, **ctx)
-            HTML(string=html_str, base_url=BASE_DIR).write_pdf(output_path)
-            try:
-                doc = fitz.open(output_path)
-                pc = doc.page_count
-                doc.close()
-            except Exception:
-                break
-            if pc <= 2:
+            # Lay the document out first and count its pages; only the version
+            # we keep gets written out as a PDF (painting + embedding images is
+            # the expensive part, so failed density attempts skip it).
+            doc = HTML(string=html_str, base_url=BASE_DIR).render()
+            if len(doc.pages) <= 2 or attempt_no == len(attempts) - 1:
+                doc.write_pdf(output_path)
                 break
         if tmp_photo:
             os.unlink(tmp_photo.name)

@@ -717,10 +717,16 @@ def _fmt_int(v):
         return str(v or "")
 
 
-def hp_flyer_context(listing, density="", fill_page1=False):
-    """Everything flyer_hp.html needs beyond the parsed record itself."""
+def hp_flyer_context(listing, density="", fill_page1=False, listing_mode=False):
+    """Everything flyer_hp.html needs beyond the parsed record itself.
+
+    listing_mode=True is the Listing Agent sheet: it leaves out price history,
+    prior sale and the sale/listing history card (fine for a buyer, too much
+    for a sheet printed for the seller's own listing)."""
     hp = listing.hp
     B = {b["key"]: b for b in hp.get("buckets", []) if not b.get("agent_only")}
+    if listing_mode and B.get("price"):
+        B["price"] = dict(B["price"], rows=[r for r in B["price"]["rows"] if r[0] not in ("Price history", "Last sold")])
     f = hp.get("facts") or {}
     condo = bool(hp.get("is_condo"))
 
@@ -749,7 +755,7 @@ def hp_flyer_context(listing, density="", fill_page1=False):
     facts += [(hp.get("year_built"), "Built"), (park, "Parking")]
     facts = [(str(n), l) for n, l in facts if n]
 
-    price_sub = hp.get("price_note") or hp.get("price_per_sqft") or ""
+    price_sub = (hp.get("price_per_sqft") or "") if listing_mode else (hp.get("price_note") or hp.get("price_per_sqft") or "")
     meta = hp.get("property_type") or ""
     style = (hp.get("architectural_style") or "").strip()
     if style:
@@ -769,7 +775,7 @@ def hp_flyer_context(listing, density="", fill_page1=False):
         hist.append({"date": h.get("date", ""), "price": h.get("price", ""),
                      "event": ev.replace(" (Active)", "").replace(" (Public Record)", " (public record)")})
     cap = {"": 6, "dense": 5, "very-dense": 4}.get(density, 6)
-    hist = hist[:cap]
+    hist = [] if listing_mode else hist[:cap]
 
     levels = {}
     for r in hp.get("rooms", []):
@@ -842,6 +848,7 @@ def render_flyer(
     agent_email="brian@justinlucasgroup.com",
     agent_name="Brian Elmore",
     print_safe_logo=False,
+    listing_mode=False,
 ):
     env = Environment(loader=FileSystemLoader(os.path.join(BASE_DIR, "templates")))
     template = env.get_template("flyer.html")
@@ -968,7 +975,7 @@ def render_flyer(
         status = "Private Listing" if is_private_listing(listing) else (listing.hp.get("status") or status_label_for(listing))
         attempts = [("", False), ("dense", False), ("very-dense", False)]
         for attempt_no, (density, fill) in enumerate(attempts):
-            ctx = hp_flyer_context(listing, density, fill)
+            ctx = hp_flyer_context(listing, density, fill, listing_mode)
             html_str = hp_tmpl.render(
                 l=listing, font_dir=FONT_DIR, logo_jlg=JLG_BLOCK,
                 logo_brokerage=BROKERAGE_LOCKUP_BW if print_safe_logo else BROKERAGE_LOCKUP,
@@ -1037,7 +1044,7 @@ def render_flyer(
         feature_col2=feature_col2,
         tax_uncap_note=tax_uncap_note(listing),
         tax_exemption_note=tax_exemption_note(listing),
-        price_change_note=price_change_note(listing),
+        price_change_note="" if listing_mode else price_change_note(listing),
         is_condo_like=(listing.ownership or "").strip().lower() in ("condo", "co-op"),
         prepared_date=datetime.date.today().strftime("%B %-d, %Y"),
     )

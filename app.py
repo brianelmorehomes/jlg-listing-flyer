@@ -189,6 +189,17 @@ PAGE = """
     <div style="font-size:.78rem;color:var(--muted);margin-top:10px;">
       Converting for someone else on the team? Just change the name above before converting &mdash; e.g. Justin, Eric, or Camille's own listings.
     </div>
+    <div style="margin-top:16px;font-size:.82rem;color:var(--text);">
+      <div style="font-weight:600;margin-bottom:5px;">Sheet type</div>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;margin-bottom:3px;">
+        <input type="radio" name="sheetMode" id="sheetModeBuyer" value="buyer" checked style="margin:0;">
+        Buyer Agent &mdash; full detail, including price and sale history
+      </label>
+      <label style="display:flex;align-items:center;gap:7px;cursor:pointer;">
+        <input type="radio" name="sheetMode" id="sheetModeListing" value="listing" style="margin:0;">
+        Listing Agent &mdash; leaves out price history, last sale and sale history
+      </label>
+    </div>
     <label style="display:flex;align-items:center;gap:7px;margin-top:16px;font-size:.82rem;color:var(--text);cursor:pointer;">
       <input type="checkbox" id="printSafeLogo" {{ 'checked' if cfg.print_safe_logo else '' }} style="margin:0;">
       Print-safe logo (black &amp; white)
@@ -245,6 +256,10 @@ const printSafeLogoEl = document.getElementById('printSafeLogo');
 nameEl.value = localStorage.getItem('jlg_agent_name') || nameEl.value;
 phoneEl.value = localStorage.getItem('jlg_agent_phone') || phoneEl.value;
 emailEl.value = localStorage.getItem('jlg_agent_email') || emailEl.value;
+const sheetModeListingEl = document.getElementById('sheetModeListing');
+const sheetModeBuyerEl = document.getElementById('sheetModeBuyer');
+try { if (localStorage.getItem('jlg_sheet_mode') === 'listing') sheetModeListingEl.checked = true; } catch (e) {}
+[sheetModeBuyerEl, sheetModeListingEl].forEach(el => el.addEventListener('change', () => { try { localStorage.setItem('jlg_sheet_mode', sheetModeListingEl.checked ? 'listing' : 'buyer'); } catch (e) {} }));
 const storedPrintSafe = localStorage.getItem('jlg_print_safe_logo');
 if (storedPrintSafe !== null) printSafeLogoEl.checked = storedPrintSafe === '1';
 nameEl.addEventListener('change', () => localStorage.setItem('jlg_agent_name', nameEl.value));
@@ -358,6 +373,7 @@ function convertStagedFiles() {
   form.append('agent_phone', phoneEl.value);
   form.append('agent_email', emailEl.value);
   form.append('print_safe_logo', printSafeLogoEl.checked ? '1' : '');
+  form.append('sheet_mode', sheetModeListingEl.checked ? 'listing' : 'buyer');
 
   results.innerHTML = '';
   zipWrap.innerHTML = '';
@@ -412,6 +428,7 @@ def convert():
     agent_phone = request.form.get("agent_phone", "").strip()
     agent_email = request.form.get("agent_email", "").strip() or "brian@justinlucasgroup.com"
     print_safe_logo = bool(request.form.get("print_safe_logo", "").strip())
+    listing_mode = request.form.get("sheet_mode", "").strip() == "listing"
 
     files = request.files.getlist("files")
     batch_id = uuid.uuid4().hex[:10]
@@ -477,6 +494,7 @@ def convert():
                         agent_email=agent_email,
                         agent_name=agent_name,
                         print_safe_logo=print_safe_logo,
+                        listing_mode=listing_mode,
                     )
                     results.append({
                         "ok": True,

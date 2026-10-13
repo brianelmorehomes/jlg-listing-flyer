@@ -365,7 +365,10 @@ function convertStagedFiles() {
   statusEl.textContent = 'Converting ' + stagedFiles.length + ' file(s)...';
 
   fetch('/convert', { method: 'POST', body: form })
-    .then(r => r.json())
+    .then(r => r.text().then(t => {
+      try { return JSON.parse(t); }
+      catch (e) { throw new Error('The server took too long or restarted (HTTP ' + r.status + '). Wait a minute and try again.'); }
+    }))
     .then(data => {
       statusEl.textContent = 'Done. ' + data.results.filter(r => r.ok).length + ' of ' + data.results.length + ' converted.';
       data.results.forEach(r => {

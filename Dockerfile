@@ -25,5 +25,9 @@ ENV PORT=10000
 EXPOSE 10000
 
 # 2 workers is plenty for single-agent, once-a-day use; keep it light so it
-# fits comfortably in Render's free-tier memory limit.
-CMD gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+# fits comfortably in Render's free-tier memory limit. The 300s timeout
+# matters: the card-style flyer parses the sheet twice and re-renders up to
+# three times to fit two pages, ~14s on a laptop but over a minute on
+# Render's free-tier CPU. At 60s gunicorn killed the worker mid-render and
+# the browser got an HTML error page instead of JSON.
+CMD gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 300

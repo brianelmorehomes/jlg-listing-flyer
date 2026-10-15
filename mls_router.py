@@ -21,6 +21,10 @@ multi-listing export, so that branch always returns a single-item list.
 The Home Platform export CAN hold several listings (a buyer-tour print),
 so that branch splits the file per listing via the shared hp_core parser.
 
+Output layout: all three sources end up on the same card-style flyer.
+Home Platform sheets get `listing.hp` from hp_core; MichRIC and MRED listings
+get it from hp_adapter.attach_hp() (called in parse_listing_pdfs below).
+
 Detection is a cheap text signature check (each source's own copyright/
 disclaimer line names itself, e.g. "...Copyright 2026 MichRIC(R), LLC..."
 or "...Compass International Holdings..." for the new platform) rather
@@ -42,6 +46,7 @@ except Exception:  # pragma: no cover - optimization only
 from parser import parse_listing_pdfs as _parse_mred_batch
 from parser_michric import parse_listing_pdf as _parse_michric, is_michric
 from parser_platform import parse_listing_pdf as _parse_platform, is_new_platform
+from hp_adapter import attach_hp
 
 
 def _sniff_text(file_bytes: bytes) -> str:
@@ -93,6 +98,11 @@ def parse_listing_pdfs(file_bytes: bytes, source_filename: str = ""):
     text = _sniff_text(file_bytes)
     if is_new_platform(text):
         return [_parse_platform(part, source_filename) for part in _split_platform_listings(file_bytes)]
+    # MichRIC and MRED sheets are parsed into the flat Listing fields, then
+    # converted to the same record Home Platform sheets produce (hp_adapter),
+    # so every source renders through the one card-style flyer.
     if is_michric(text):
-        return [_parse_michric(file_bytes, source_filename)]
-    return _parse_mred_batch(file_bytes, source_filename)
+        listings = [_parse_michric(file_bytes, source_filename)]
+    else:
+        listings = _parse_mred_batch(file_bytes, source_filename)
+    return [attach_hp(l) for l in listings]

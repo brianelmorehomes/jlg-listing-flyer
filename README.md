@@ -83,3 +83,21 @@ redeploys on every push to `main`. The parsing logic lives in `parser.py`,
 the branded layout in `templates/flyer.html`, and the PDF rendering in
 `render.py`. See the desktop app's README for more detail on how the parser
 is structured if you want to extend it to another MLS property type.
+
+## One layout for every MLS source
+
+MRED, MichRIC and Home Platform sheets all render through the same card-style
+flyer (`templates/flyer_hp.html`). Home Platform sheets are read by the shared
+`hp_core.py`; MichRIC and MRED sheets are read by their own parsers
+(`parser.py`, `parser_michric.py`) and then converted by `hp_adapter.py` into
+the same record, so the output layout never depends on where the sheet came
+from. Only the amount of detail differs (a private-network MRED sheet simply
+has fewer cards to fill).
+
+- `mls_router.py` calls `hp_adapter.attach_hp()` for MichRIC and MRED listings.
+- If the adapter ever fails, `listing.hp` stays `None` and `render.py` falls
+  back to the legacy `templates/flyer.html`, so a conversion never errors out.
+- To show another field on the card flyer for MichRIC/MRED, add it to
+  `build_hp()` in `hp_adapter.py` (MichRIC's labelled extras live in
+  `Listing.extras`, filled in `parser_michric.py`).
+- Tests: `python3 tests/test_unified_flyer.py` (real sample sheets in `tests/fixtures/`).
